@@ -1,0 +1,34 @@
+name = "Funicular"
+uuid = "7ea9c160-9439-4cfe-a32a-3debd616a773"
+version = "0.1.0"
+authors = ["Paul Virally <pvirally@gmail.com>"]
+
+[deps]
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+
+[extensions]
+FunicularCUDAExt = "CUDA"
+FunicularDiskArraysExt = ["DiskArrays", "HDF5"]
+FunicularHDF5Ext = "HDF5"
+FunicularLinearMapsExt = "LinearMaps"
+FunicularMetalExt = "Metal"
+
+[weakdeps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+DiskArrays = "3c3547ce-8d99-4f5e-a174-61eb10b00ae3"
+HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
+LinearMaps = "7a12625a-238d-50fd-b39a-03d52299707e"
+Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
+
+[compat]
+CUDA = "5.4"
+DiskArrays = "0.4"
+HDF5 = "0.17"
+KernelAbstractions = "0.9"
+LinearAlgebra = "1"
+LinearMaps = "3"
+Metal = "1"
+Random = "1"
+julia = "1.10"
