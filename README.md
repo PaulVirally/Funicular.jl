@@ -1,6 +1,6 @@
 # Funicular.jl
 
-<img src="docs/src/assets/logo.svg" alt="Funicular.jl" width="140" align="right">
+<img src="docs/src/assets/logo.svg" alt="Funicular.jl" width="300" align="right">
 
 [![CI](https://github.com/PaulVirally/Funicular.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/PaulVirally/Funicular.jl/actions/workflows/CI.yml)
 [![docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://paulvirally.github.io/Funicular.jl/stable/)
@@ -52,7 +52,3 @@ runs the whole suite on the CPU reference backend, whose "device" is a plain
 array and whose queues are chains of tasks with injected jitter, so ordering
 mistakes fail here rather than on a GPU node. `test/metal` and `test/cuda` are
 environments that add a GPU backend and run the same suite against it.
-
-## Status
-
-Version 0.1. Requires Julia 1.10.
