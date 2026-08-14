@@ -7,11 +7,11 @@ import Metal
 
 import Funicular: alloc_device, alloc_host_slab, d2h!, devicetype,
                   gram_accumulate!, h2d!, ka_backend, make_queue, metal_backend,
-                  rdiv_upper!, record_event, submit!, sync_all, sync_queue,
-                  supports_eltype, transfers_are_real, wait_event
+                  rdiv_upper!, record_event, rightmul_gemm!, submit!, sync_all,
+                  sync_queue, supports_eltype, transfers_are_real, wait_event
 
 using Funicular: DeviceBackend, HostSlab, TaskEvent, convert_copy!,
-                 gram_accumulate_ka!, rdiv_upper_ka!
+                 gram_accumulate_ka!, rdiv_upper_ka!, rightmul_gemm_ka!
 
 """
     MetalBackend(; jitter=0.0)
@@ -186,6 +186,7 @@ end
 # device memory from the host and fail. The portable kernels are used instead.
 rdiv_upper!(backend::MetalBackend, Y::AbstractMatrix, R::AbstractMatrix) = rdiv_upper_ka!(backend, Y, R)
 gram_accumulate!(backend::MetalBackend, C, A, B, α, β) = gram_accumulate_ka!(backend, C, A, B, α, β)
+rightmul_gemm!(backend::MetalBackend, dst, A, C) = rightmul_gemm_ka!(backend, dst, A, C)
 
 h2d!(dst, src, backend::MetalBackend; queue=nothing) = metal_copy!(dst, src, backend, queue)
 d2h!(dst, src, backend::MetalBackend; queue=nothing) = metal_copy!(dst, src, backend, queue)

@@ -12,7 +12,16 @@ GhostPanels
 npanels
 panelwidth
 panelrange
+copycols!
 ```
+
+`Base.copyto!` and `Base.similar` also take panel matrices, as methods on the
+existing generics rather than new names. `copyto!(pm, A)` fills a matrix from a
+dense one, and `copyto!(dest, src)` copies one panel matrix into another of the
+same `N` and `k`, which is how a matrix is cut into different panels. Both are
+[`copycols!`](@ref) over every column. `similar(pm)`, `similar(pm, T)` and
+`similar(pm, T, dims)` build an uninitialized matrix from `pm`'s plan, with
+`pm`'s panel width.
 
 ## Sweeps
 
@@ -25,6 +34,7 @@ foreachpanel
 ```@docs
 gram
 panelmul!
+rightmul!
 cholqr2!
 project
 scale!
@@ -63,10 +73,11 @@ Funicular.metal_backend
 | `Funicular.panel_capable`     | operator trait, `mul!` takes a matrix           |
 | `Funicular.ishermitian_op`    | operator trait, `G == G'`                       |
 | `Funicular.linearmap`         | wrap an operator as a `LinearMap`               |
+| `Funicular.plan`              | the plan a matrix was built from                |
 | `Funicular.prefetch!`         | bring one panel to the host tier                |
 | `Funicular.evict!`            | send one panel back to its cold tier            |
 | `Funicular.free!`             | release a matrix's blocks and close its file    |
 | `Funicular.diskarray`         | read a Funicular file through DiskArrays.jl     |
 | `Funicular.disk_reads`        | panels read from a matrix's store               |
 | `Funicular.disk_writes`       | panels written to it                            |
-| `Funicular.randn_panel!`      | the default `GhostPanels` generator             |
+| `Funicular.randn_column!`     | the default `GhostPanels` generator             |

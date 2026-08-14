@@ -82,6 +82,165 @@ end
     @test_throws ArgumentError panelmul!(X, deviceoperator(randmatrix(T, 10, 10)), X)
 end
 
+@testset "panelmul! with a rectangular operator $T $(m)×$(n) w=$w nbuffers=$nb" for T in testeltypes(), (m, n) in ((40, 25), (25, 40)), w in (23, 7, 1), nb in (1, 2)
+    k = 23
+    A = randmatrix(T, n, k)
+    B = randmatrix(T, m, k)
+    reference = randmatrix(T, m, n)
+    dense = deviceoperator(reference)
+    plan = testplan()
+    X = PanelMatrix(A; plan=plan, w=w)
+    Y = PanelMatrix{T}(undef, m, k; plan=plan, w=w)
+    tol = blastol(T, max(m, n), k)
+
+    @test Matrix(panelmul!(Y, dense, X; nbuffers=nb)) ≈ reference * A rtol=tol
+    @test Matrix(panelmul!(Y, ColumnOperator(dense), X; nbuffers=nb)) ≈ reference * A rtol=tol
+
+    # The adjoint maps the other way, so the two matrices swap roles.
+    W = PanelMatrix(B; plan=plan, w=w)
+    Z = PanelMatrix{T}(undef, n, k; plan=plan, w=w)
+    @test Matrix(panelmul!(Z, adjoint(dense), W; nbuffers=nb)) ≈ reference' * B rtol=tol
+end
+
+@testset "panelmul! applies a rectangular operator to a ghost w=$w" for w in BLAS_WIDTHS
+    T = defaulteltype()
+    m, n, k = 40, 25, 23
+    reference = randmatrix(T, m, n)
+    plan = testplan()
+    Ω = GhostPanels(T, n, k; plan=plan, seed=0x5EED, w=w)
+    Y = PanelMatrix{T}(undef, m, k; plan=plan, w=w)
+
+    panelmul!(Y, deviceoperator(reference), Ω)
+    @test Matrix(Y) ≈ reference * Matrix(Ω) rtol=blastol(T, m, k)
+end
+
+@testset "panelmul! rejects a rectangular operator that does not fit" begin
+    T = defaulteltype()
+    plan = testplan()
+    X = PanelMatrix{T}(undef, 12, 20; plan=plan, w=7)
+    Y = PanelMatrix{T}(undef, 15, 20; plan=plan, w=7)
+    G = deviceoperator(randmatrix(T, 15, 12))
+
+    @test_throws ArgumentError panelmul!(Y, deviceoperator(randmatrix(T, 12, 15)), X)
+    @test_throws ArgumentError panelmul!(Y, G, PanelMatrix{T}(undef, 12, 20; plan=plan, w=5))
+    @test_throws ArgumentError panelmul!(Y, G, PanelMatrix{T}(undef, 12, 18; plan=plan, w=7))
+    @test panelmul!(Y, G, X) === Y
+end
+
+@testset "rightmul! out of place against dense $T r=$r w=$w nbuffers=$nb" for T in testeltypes(), r in (12, 23, 31), w in BLAS_WIDTHS, nb in (1, 2)
+    N, s = 40, 23
+    A = randmatrix(T, N, s)
+    C = randmatrix(T, s, r)
+    plan = testplan()
+    src = PanelMatrix(A; plan=plan, w=w)
+    dest = PanelMatrix{T}(undef, N, r; plan=plan, w=clamp(w - 3, 1, r))
+    tol = blastol(T, N, max(s, r))
+
+    @test rightmul!(dest, src, C; nbuffers=nb) === dest
+    @test Matrix(dest) ≈ A * C rtol=tol
+    @test Matrix(src) == A
+end
+
+@testset "rightmul! in place against dense $T w=$w nbuffers=$nb" for T in testeltypes(), w in BLAS_WIDTHS, nb in (1, 2)
+    N, k = 40, 23
+    A = randmatrix(T, N, k)
+    C = randmatrix(T, k, k)
+    plan = testplan()
+    Y = PanelMatrix(A; plan=plan, w=w)
+    tol = blastol(T, N, k)
+
+    @test rightmul!(Y, C; nbuffers=nb) === Y
+    @test Matrix(Y) ≈ A * C rtol=tol
+
+    dest = PanelMatrix{T}(undef, N, k; plan=plan, w=w)
+    rightmul!(dest, PanelMatrix(A; plan=plan, w=w), C; nbuffers=nb)
+    @test Matrix(dest) ≈ Matrix(Y) rtol=tol
+end
+
+@testset "rightmul! is the same to the bit at nbuffers 1 and 2 w=$w" for w in BLAS_WIDTHS
+    T = defaulteltype()
+    N, s, r = 40, 23, 12
+    A = randmatrix(T, N, s)
+    C = randmatrix(T, s, r)
+    D = randmatrix(T, s, s)
+
+    produced = map((1, 2)) do nb
+        plan = testplan()
+        src = PanelMatrix(A; plan=plan, w=w)
+        dest = PanelMatrix{T}(undef, N, r; plan=plan, w=clamp(w - 3, 1, r))
+        Matrix(rightmul!(dest, src, C; nbuffers=nb))
+    end
+    @test produced[1] == produced[2]
+
+    inplace = map((1, 2)) do nb
+        plan = testplan()
+        Matrix(rightmul!(PanelMatrix(A; plan=plan, w=w), D; nbuffers=nb))
+    end
+    @test inplace[1] == inplace[2]
+end
+
+@testset "rightmul! takes a wrapped factor w=$w" for w in BLAS_WIDTHS
+    T = defaulteltype()
+    N, k = 40, 23
+    A = randmatrix(T, N, k)
+    R = UpperTriangular(randmatrix(T, k, k) + 4I)
+    D = adjoint(randmatrix(T, k, k))
+    plan = testplan()
+    tol = blastol(T, N, k)
+
+    @test Matrix(rightmul!(PanelMatrix(A; plan=plan, w=w), R)) ≈ A * R rtol=tol
+    @test Matrix(rightmul!(PanelMatrix(A; plan=plan, w=w), inv(R))) ≈ A * Matrix(inv(R)) rtol=tol
+    @test Matrix(rightmul!(PanelMatrix(A; plan=plan, w=w), D)) ≈ A * D rtol=tol
+end
+
+@testset "rightmul! with narrowed host storage" begin
+    T = defaulteltype()
+    S = narrowed(T)
+    N, s, r, w = 40, 23, 12, 7
+    A = randmatrix(T, N, s)
+    C = randmatrix(T, s, r)
+    plan = testplan(host_eltype=S)
+    src = PanelMatrix(A; plan=plan, w=w)
+    dest = PanelMatrix{T}(undef, N, r; plan=plan, w=5)
+    stored = T.(S.(A))
+
+    rightmul!(dest, src, C)
+    # Both tiers hold S, so the product is narrowed on the way back down as well
+    # as on the way up, and the tolerance has to be the storage eltype's.
+    @test Matrix(dest) ≈ stored * C rtol=blastol(S, N, s)
+end
+
+@testset "rightmul! reads a ghost source w=$w" for w in BLAS_WIDTHS
+    T = defaulteltype()
+    N, s, r = 40, 23, 12
+    C = randmatrix(T, s, r)
+    plan = testplan()
+    Ω = GhostPanels(T, N, s; plan=plan, seed=0x5EED, w=w)
+    dest = PanelMatrix{T}(undef, N, r; plan=plan, w=clamp(w - 3, 1, r))
+    reference = Matrix(Ω)
+
+    @test Matrix(rightmul!(dest, Ω, C)) ≈ reference * C rtol=blastol(T, N, s)
+    @test Matrix(Ω) == reference
+end
+
+@testset "rightmul! rejects factors and matrices that do not fit" begin
+    T = defaulteltype()
+    N, s, r, w = 20, 12, 8, 5
+    plan = testplan()
+    Y = PanelMatrix(randmatrix(T, N, s); plan=plan, w=w)
+    dest = PanelMatrix{T}(undef, N, r; plan=plan, w=4)
+    Ω = GhostPanels(T, N, s; plan=plan, w=w)
+
+    @test_throws ArgumentError rightmul!(Y, randmatrix(T, s, r))
+    @test_throws ArgumentError rightmul!(Y, randmatrix(T, r, s))
+    @test_throws ArgumentError rightmul!(dest, Y, randmatrix(T, s, s))
+    @test_throws ArgumentError rightmul!(Y, Y, randmatrix(T, s, s))
+    @test_throws ArgumentError rightmul!(Ω, randmatrix(T, s, s))
+    @test_throws ArgumentError rightmul!(Ω, Y, randmatrix(T, s, s))
+    @test_throws ArgumentError rightmul!(dest, PanelMatrix{T}(undef, N + 1, s; plan=plan, w=w), randmatrix(T, s, r))
+    @test_throws ArgumentError rightmul!(dest, PanelMatrix{T}(undef, N, s; plan=testplan(), w=w), randmatrix(T, s, r))
+end
+
 @testset "axpy!, scale!, dot and norm $T w=$w nbuffers=$nb" for T in testeltypes(), w in BLAS_WIDTHS, nb in (1, 2)
     N, k = 40, 23
     A, B = randmatrix(T, N, k), randmatrix(T, N, k)
@@ -255,23 +414,46 @@ end
     end
 end
 
+@testset "rightmul! holds up under jitter nbuffers=$nb" for nb in (1, 2)
+    T = defaulteltype()
+    N, s, r, w = 30, 23, 12, 7
+    A = randmatrix(T, N, s)
+    C = randmatrix(T, s, r)
+    D = randmatrix(T, s, s)
+    tol = blastol(T, N, s)
+    for _ in 1:repetitions()
+        plan = testplan(backend=jittery_backend())
+        src = PanelMatrix(A; plan=plan, w=w)
+        dest = PanelMatrix{T}(undef, N, r; plan=plan, w=5)
+        @test Matrix(rightmul!(dest, src, C; nbuffers=nb)) ≈ A * C rtol=tol
+        @test Matrix(rightmul!(src, D; nbuffers=nb)) ≈ A * D rtol=tol
+    end
+end
+
 @testset "the panel BLAS gives its buffers back" begin
     T = defaulteltype()
     N, k, w = 40, 23, 7
     plan = testplan()
     X = PanelMatrix(randmatrix(T, N, k); plan=plan, w=w)
     Y = PanelMatrix(randmatrix(T, N, k); plan=plan, w=w)
+    Z = PanelMatrix{T}(undef, N, 12; plan=plan, w=5)
     dense = deviceoperator(randmatrix(T, N, N))
+    C = randmatrix(T, k, 12)
+    D = randmatrix(T, k, k)
 
     gram(X, Y)
     norm(X)
     project(X, dense)
+    rightmul!(Z, X, C)
+    rightmul!(Y, D)
     cholqr2!(Y)
     before = device_bytes_allocated(plan)
 
     gram(X, Y)
     norm(X)
     project(X, dense)
+    rightmul!(Z, X, C)
+    rightmul!(Y, D)
     cholqr2!(Y)
     @test device_bytes_allocated(plan) == before
 end

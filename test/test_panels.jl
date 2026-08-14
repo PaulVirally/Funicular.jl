@@ -141,6 +141,212 @@ end
     @test host_bytes_free(pool) == sum(pool.cursors)
 end
 
+@testset "copycols! from a host matrix T=$T w=$w" for T in testeltypes(), w in PANEL_WIDTHS
+    N, k = 13, 41
+    A = randmatrix(T, N, k)
+    plan = testplan()
+    for dcols in (1:9, 12:28, 33:41, 1:41, 20:20)
+        dest = PanelMatrix(A; plan=plan, w=w)
+        B = randmatrix(T, N, length(dcols))
+        reference = copy(A)
+        reference[:, dcols] = B
+
+        @test copycols!(dest, dcols, B) === dest
+        @test Matrix(dest) == reference
+        @test all(panel -> panel.pins == 0, dest.panels)
+        free!(dest)
+    end
+end
+
+@testset "copycols! between panel matrices T=$T widths=$widths" for T in testeltypes(), widths in ((7, 7), (7, 5), (23, 4), (1, 6))
+    sw, dw = widths
+    N, sk, dk = 12, 23, 30
+    A = randmatrix(T, N, sk)
+    B = randmatrix(T, N, dk)
+    plan = testplan()
+    for (dcols, scols) in ((1:sk, 1:sk), (8:20, 3:15), (25:30, 1:6), (14:14, 23:23))
+        src = PanelMatrix(A; plan=plan, w=sw)
+        dest = PanelMatrix(B; plan=plan, w=dw)
+        reference = copy(B)
+        reference[:, dcols] = A[:, scols]
+
+        @test copycols!(dest, dcols, src, scols) === dest
+        @test Matrix(dest) == reference
+        @test Matrix(src) == A
+        @test all(panel -> panel.pins == 0, src.panels)
+        @test all(panel -> panel.pins == 0, dest.panels)
+        free!(src)
+        free!(dest)
+    end
+end
+
+@testset "copycols! grows a sketch" begin
+    T = defaulteltype()
+    N, m = 20, 9
+    plan = testplan()
+    A = randmatrix(T, N, m)
+    narrow = PanelMatrix(A; plan=plan, w=4)
+    wide = PanelMatrix{T}(undef, N, 2m; plan=plan, w=5)
+
+    copycols!(wide, 1:m, narrow, 1:m)
+    copycols!(wide, (m + 1):2m, randmatrix(T, N, m))
+    @test Matrix(wide)[:, 1:m] == A
+end
+
+@testset "a ghost matrix is a copycols! source" begin
+    T = defaulteltype()
+    N, k, w = 20, 8, 3
+    plan = testplan()
+    Ω = GhostPanels(T, N, k; plan=plan, seed=0xC0FFEE, w=w)
+    A = Matrix(Ω)
+    dest = PanelMatrix{T}(undef, N, 2k; plan=plan, w=5)
+
+    copycols!(dest, 1:k, Ω, 1:k)
+    copycols!(dest, (k + 1):2k, Ω, 1:k)
+    collected = Matrix(dest)
+    @test collected[:, 1:k] == A
+    @test collected[:, (k + 1):2k] == A
+    # Reading a ghost leaves it a ghost, with nothing written and nothing dirty.
+    @test occursin("ghost", sprint(show, Ω))
+    @test !any(panel -> panel.dirty, Ω.panels)
+    @test Matrix(Ω) == A
+end
+
+@testset "copyto! repartitions a matrix" begin
+    T = defaulteltype()
+    N, k = 9, 20
+    A = randmatrix(T, N, k)
+    plan = testplan()
+    src = PanelMatrix(A; plan=plan, w=7)
+    dest = PanelMatrix{T}(undef, N, k; plan=plan, w=4)
+
+    @test copyto!(dest, src) === dest
+    @test panelwidth(dest) == 4
+    @test Matrix(dest) == A
+    @test_throws DimensionMismatch copyto!(PanelMatrix{T}(undef, N, k + 1; plan=plan, w=4), src)
+    @test_throws DimensionMismatch copyto!(PanelMatrix{T}(undef, N + 1, k; plan=plan, w=4), src)
+end
+
+@testset "copycols! through narrowed host storage" begin
+    T = defaulteltype()
+    S = narrowed(T)
+    N, k = 9, 12
+    A = randmatrix(T, N, k)
+    src = PanelMatrix(A; plan=testplan(host_eltype=S), w=5)
+    dest = PanelMatrix{T}(undef, N, k; plan=testplan(), w=4)
+
+    copycols!(dest, 1:k, src, 1:k)
+    @test Matrix(dest) == T.(S.(A))
+
+    stored = PanelMatrix{T}(undef, N, k; plan=testplan(host_eltype=S), w=3)
+    copycols!(stored, 1:k, A)
+    @test Matrix(stored) == T.(S.(A))
+end
+
+@testset "copycols! validation" begin
+    T = defaulteltype()
+    N, k = 8, 12
+    plan = testplan()
+    dest = PanelMatrix{T}(undef, N, k; plan=plan, w=5)
+    src = PanelMatrix(randmatrix(T, N, k); plan=plan, w=4)
+    A = randmatrix(T, N, 4)
+    Ω = GhostPanels(T, N, k; plan=plan, w=4)
+
+    @test_throws ArgumentError copycols!(dest, 10:14, A)
+    @test_throws ArgumentError copycols!(dest, 0:3, A)
+    @test_throws DimensionMismatch copycols!(dest, 1:4, randmatrix(T, N, 5))
+    @test_throws DimensionMismatch copycols!(dest, 1:4, randmatrix(T, N + 1, 4))
+    @test_throws ArgumentError copycols!(dest, 1:4, src, 10:13)
+    @test_throws DimensionMismatch copycols!(dest, 1:4, src, 1:5)
+    @test_throws DimensionMismatch copycols!(dest, 1:4, PanelMatrix{T}(undef, N + 1, k; plan=plan, w=4), 1:4)
+    @test_throws ArgumentError copycols!(dest, 1:4, dest, 5:8)
+    @test_throws ArgumentError copycols!(Ω, 1:4, A)
+    @test_throws ArgumentError copycols!(Ω, 1:4, src, 1:4)
+    # Every one of those is refused before anything is staged.
+    @test all(panel -> panel.pins == 0, dest.panels)
+    @test all(panel -> panel.pins == 0, src.panels)
+end
+
+@testset "similar takes the plan and the width along" begin
+    T = defaulteltype()
+    S = last(testeltypes())
+    N, k = 40, 23
+    plan = testplan()
+    pm = PanelMatrix{T}(undef, N, k; plan=plan, w=7)
+
+    like = similar(pm)
+    @test size(like) == (N, k)
+    @test eltype(like) === T
+    @test panelwidth(like) == 7
+    @test Funicular.plan(like) === plan
+    @test Funicular.plan(like) === Funicular.plan(pm)
+
+    @test eltype(similar(pm, S)) === S
+    @test size(similar(pm, S)) == (N, k)
+    @test panelwidth(similar(pm, S)) == 7
+
+    tall = similar(pm, T, (N + 17, k))
+    @test size(tall) == (N + 17, k)
+    @test panelwidth(tall) == 7
+    # A width wider than the matrix would leave the first panel ragged.
+    @test panelwidth(similar(pm, T, (N, 3))) == 3
+end
+
+@testset "a similar companion is panelmul! conformal" begin
+    T = defaulteltype()
+    N, m, k = 40, 17, 23
+    plan = testplan()
+    A = randmatrix(T, N, k)
+    G = randmatrix(T, m, N)
+    X = PanelMatrix(A; plan=plan, w=7)
+    Y = similar(X, T, (m, k))
+
+    panelmul!(Y, deviceoperator(G), X)
+    @test Matrix(Y) ≈ G * A rtol=blastol(T, N, k)
+end
+
+if HAS_HDF5
+    @testset "copycols! stages both sides through the disk tier" begin
+        T = defaulteltype()
+        N, k, w = 10, 24, 4
+        A = randmatrix(T, N, k)
+        B = randmatrix(T, N, k)
+        mktempdir() do dir
+            # Room for the two panels one run holds and no more, so every other
+            # panel of both matrices is out on disk while the copy runs.
+            plan = testplan(scratch_dir=dir, panel_width=w,
+                            host_budget=panelbudget(2, N, w, T))
+            src = PanelMatrix(A; plan=plan, w=w)
+            dest = PanelMatrix(B; plan=plan, w=w)
+            reference = copy(B)
+            reference[:, 5:20] = A[:, 1:16]
+
+            copycols!(dest, 5:20, src, 1:16)
+            @test Matrix(dest) == reference
+            @test Matrix(src) == A
+            @test disk_reads(src) > 0
+            @test disk_reads(dest) > 0
+            @test disk_writes(dest) > 0
+        end
+    end
+
+    @testset "similar opens a store of its own" begin
+        T = defaulteltype()
+        mktempdir() do dir
+            plan = testplan(scratch_dir=dir, panel_width=4)
+            pm = PanelMatrix{T}(undef, 8, 12; plan=plan, w=4)
+            @test length(readdir(dir)) == 1
+
+            like = similar(pm)
+            @test length(readdir(dir)) == 2
+            @test like.store !== pm.store
+            free!(like)
+            @test length(readdir(dir)) == 1
+            free!(pm)
+        end
+    end
+end
+
 @testset "epoch and dirty bookkeeping" begin
     T = defaulteltype()
     plan = testplan()

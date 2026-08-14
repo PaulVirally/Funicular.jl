@@ -14,10 +14,15 @@ matrices become a `PanelMatrix` and which stay a `Matrix`.
 | `Y = G * X`                    | `panelmul!(Y, G, X)`            | one column-panel sweep |
 | `Q, R = qr(Y)`                 | `R = cholqr2!(Y)`, `Y` becomes `Q` | four row-block sweeps |
 | `B = X' * Y`                   | `gram(X, Y)`                    | one row-block sweep |
+| `V = Q * C`                    | `rightmul!(V, Q, C)`            | one row-block sweep |
+| `Y = Y * C`                    | `rightmul!(Y, C)`               | one row-block sweep |
 | `S = Q' * G * Q`               | `project(Q, G)`                 | `p (p + 1)` panel uploads |
 | `Y .+= α .* X`                 | `axpy!(α, X, Y)`                | one sweep |
 | `Y .*= α`                      | `scale!(Y, α)`                  | one sweep |
 | `dot(X, Y)`, `norm(X)`         | the same names                  | one sweep |
+| `Q[:, 1:s] = seed`, `hcat(Y, Z)` | `copycols!(Q, 1:s, seed)`     | none, a host copy |
+| `B .= A`                       | `copyto!(B, A)`                 | none, a host copy |
+| `Z = similar(Y)`, `Matrix{T}(undef, m, k)` | `similar(Y)`, `similar(Y, T, (m, k))` | none, an allocation |
 | anything else                  | `foreachpanel(f!, pm)`          | one sweep |
 
 Everything `k × k` stays an ordinary `Matrix` on the host: `gram` and `project`
@@ -28,10 +33,11 @@ randomized method is a plain LAPACK call.
 
 Count sweeps rather than flops. Once the matrix no longer fits on the device,
 the cost of an operation is how many times it moves the matrix past the GPU.
-`panelmul!` is one pass, `gram` is one, `cholqr2!` is four, and `project` is
-`p + 1` of them for `p` panels. A loop body that was free in the dense version
-because it was a broadcast over a resident array becomes a full sweep here, so
-fold it into the panel function of a sweep that is happening anyway.
+`panelmul!` is one pass, `gram` is one, `rightmul!` is one, `cholqr2!` is four,
+and `project` is `p + 1` of them for `p` panels. A loop body that was free in
+the dense version because it was a broadcast over a resident array becomes a
+full sweep here, so fold it into the panel function of a sweep that is happening
+anyway.
 
 Prefer `panelmul!` then `gram` over `project`. The nested version exists for the
 case where you cannot afford a second `N × k` matrix. If you can afford it,
@@ -47,8 +53,22 @@ Do not reach for indexing. There is no `getindex`. When you want a column, use
 either a sweep or, for a matrix that fits in host memory, `Matrix(pm)`, and
 which of those it is depends on whether the answer is `k × k` or `N × k`.
 
-Two matrices in one operation must be conformal: same `N`, same `k`, same `w`,
-same plan. Build them from one plan and let it choose the width.
+What two matrices have to share depends on how the operation traverses them. A
+column-panel operation takes panel `j` of both, so both have to be cut into the
+same panels: same `k` and same `w`, with the row counts free. That is
+`panelmul!`, `axpy!` and everything else that acts a column at a time. A
+row-block operation takes rows `r` of both, so both have to have the same `N`,
+with the column counts and the widths free. That is `gram` and `rightmul!`.
+Either way the two belong to one plan, since the plan owns the staging buffers
+the operation runs through.
+
+The width is what to watch when the two matrices have different row counts. A
+plan left to choose the width takes `N` into account as well as `k`, so an
+`m × k` matrix and an `n × k` one built from the same plan can come out cut
+differently and then have no panel in common, which `panelmul!` refuses. Build
+the companion as `similar(X, T, (m, k))`, which carries `X`'s width across the
+change of row count, or fix `panel_width` on the plan and take the same width
+everywhere.
 
 ## A worked shape
 

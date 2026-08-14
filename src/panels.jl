@@ -137,6 +137,14 @@ Number of column panels, `cld(k, panelwidth(pm))`.
 npanels(pm::PanelMatrix) = length(pm.panels)
 
 """
+    Funicular.plan(pm) -> ResidencyPlan
+
+The [`ResidencyPlan`](@ref) `pm` was built from. Two matrices in one operation
+have to share it.
+"""
+plan(pm::PanelMatrix) = pm.plan
+
+"""
     panelwidth(pm) -> Int
     panelwidth(pm, j) -> Int
 
@@ -182,24 +190,158 @@ end
 
 function assert_conformal(X::PanelMatrix, Y::PanelMatrix)
     (X.N, X.k, X.w) == (Y.N, Y.k, Y.w) && return nothing
-    throw(ArgumentError("panel matrices must share their (N, k, w) partitioning, got ($(X.N), $(X.k), $(X.w)) and ($(Y.N), $(Y.k), $(Y.w)). Repartitioning is not supported"))
+    throw(ArgumentError("panel matrices must share their (N, k, w) partitioning, got ($(X.N), $(X.k), $(X.w)) and ($(Y.N), $(Y.k), $(Y.w)). Build both matrices with one width, or copy one into a matrix of the other's width with copyto!"))
 end
 
-function Base.copyto!(pm::PanelMatrix, A::AbstractMatrix)
-    size(A) == size(pm) || throw(DimensionMismatch("source is $(size(A)) but the PanelMatrix is $(size(pm))"))
-    assert_writable(pm)
-    for (j, panel) in enumerate(pm.panels)
-        stage_host!(panel, pm.plan)
+# Conformality is more than an operation on two matrices usually needs. What it
+# does need depends on how it traverses them: column panel j of two matrices
+# only lines up when both are cut into the same panels, and rows r of two
+# matrices only line up when both have the same rows. The other dimensions are
+# free.
+function assert_same_panels(X::PanelMatrix, Y::PanelMatrix)
+    (X.k, X.w) == (Y.k, Y.w) && return nothing
+    throw(ArgumentError("this operation goes panel by panel, so the matrices must be cut into the same panels, but they have (k, w) = ($(X.k), $(X.w)) and ($(Y.k), $(Y.w)). Row counts may differ; column counts and widths may not. Give both matrices the same w: the automatic choice depends on N as well as k, so two matrices of different heights built from one plan can come out cut differently"))
+end
+
+function assert_same_rows(X::PanelMatrix, Y::PanelMatrix)
+    X.N == Y.N && return nothing
+    throw(ArgumentError("this operation goes row block by row block, so the matrices must have the same rows, but they have $(X.N) and $(Y.N). Column counts and panel widths may differ. Build both matrices with the same N"))
+end
+
+"""
+    copycols!(dest, dcols, src::AbstractMatrix) -> dest
+    copycols!(dest, dcols, src::PanelMatrix, scols) -> dest
+
+Copies whole columns into columns `dcols` of `dest`, either from a dense matrix
+of that shape or from columns `scols` of another panel matrix. A starting basis
+goes into the leading columns of a wider matrix this way, and a sketch grows by
+building the wider matrix and copying the narrower one into the columns it
+already holds.
+
+The copy is host side. There is no sweep and nothing crosses to the device: each
+destination panel is brought to the host tier, the columns are copied between
+storage arrays, and the panel is marked dirty. A panel matrix source comes up
+the same way, so a ghost source regenerates and a disk-backed one is read, and
+neither is written to. Eltypes convert on the way, so a narrowed storage tier on
+either side and a source that lives on the device both work.
+
+A range that lines up with the panels is no faster than one that does not. Every
+case is a host copy between storage arrays, and an aligned range only means
+fewer of them.
+
+The whole-matrix `copyto!(dest, src)` is `copycols!` with both ranges full. It
+asks the two matrices for the same `N` and `k` and nothing more, so copying
+between two panel widths is how a matrix is cut into different panels.
+
+# Arguments
+- `dest::PanelMatrix`: The matrix written into, which cannot be a ghost
+- `dcols::AbstractUnitRange`: Columns of `dest` to write, inside `1:dest.k`
+- `src`: A dense `dest.N × length(dcols)` matrix, or a panel matrix with `dest.N` rows
+- `scols::AbstractUnitRange`: Columns of a panel matrix source to read, as many as `dcols` names
+"""
+function copycols!(dest::PanelMatrix, dcols::AbstractUnitRange, src::AbstractMatrix)
+    assert_writable(dest)
+    assert_column_range(dcols, dest.k, "destination")
+    size(src) == (dest.N, length(dcols)) || throw(DimensionMismatch("the source is $(size(src, 1))×$(size(src, 2)) but columns $dcols of the destination are $(dest.N)×$(length(dcols)). Give the source one column for every column of the range, and as many rows as the destination has"))
+    for j in 1:npanels(dest)
+        into = intersect(panelrange(dest, j), dcols)
+        isempty(into) && continue
+        panel = dest.panels[j]
+        offset = first(panelrange(dest, j)) - 1
+        stage_host!(panel, dest.plan)
         try
-            copyto!(panelstorage(panel), view(A, :, panelrange(pm, j)))
+            copyto!(view(panelstorage(panel), :, (first(into) - offset):(last(into) - offset)),
+                    view(src, :, (first(into) - first(dcols) + 1):(last(into) - first(dcols) + 1)))
             panel.dirty = true
             panel.epoch += 1
         finally
-            unpin!(pm.plan, panel)
+            unpin!(dest.plan, panel)
         end
     end
-    pm
+    dest
 end
+
+function copycols!(dest::PanelMatrix, dcols::AbstractUnitRange, src::PanelMatrix, scols::AbstractUnitRange)
+    dest === src && throw(ArgumentError("copycols! cannot copy a panel matrix into itself, since the two ranges may overlap and a column would then be read after it had already been overwritten. Copy into a matrix of its own and copy that back"))
+    assert_writable(dest)
+    assert_column_range(dcols, dest.k, "destination")
+    assert_column_range(scols, src.k, "source")
+    src.N == dest.N || throw(DimensionMismatch("the source has $(src.N) rows and the destination has $(dest.N), and a column copy moves whole columns. Build both matrices with the same N"))
+    length(dcols) == length(scols) || throw(DimensionMismatch("columns $scols of the source and columns $dcols of the destination are $(length(scols)) and $(length(dcols)) columns wide. Name as many columns on one side as on the other"))
+    shift = first(scols) - first(dcols)
+    for j in 1:npanels(dest)
+        into = intersect(panelrange(dest, j), dcols)
+        isempty(into) && continue
+        dpanel = dest.panels[j]
+        doffset = first(panelrange(dest, j)) - 1
+        stage_host!(dpanel, dest.plan)
+        try
+            col = first(into)
+            while col <= last(into)
+                i = panelindex(src, col + shift)
+                from = panelrange(src, i)
+                stop = min(last(into), last(from) - shift)
+                soffset = first(from) - 1
+                spanel = src.panels[i]
+                # A run holds a panel of each matrix in host memory at once, so
+                # the host tier has to have room for two panels rather than one.
+                stage_host!(spanel, src.plan)
+                try
+                    copyto!(view(panelstorage(dpanel), :, (col - doffset):(stop - doffset)),
+                            view(panelstorage(spanel), :, (col + shift - soffset):(stop + shift - soffset)))
+                finally
+                    unpin!(src.plan, spanel)
+                end
+                col = stop + 1
+            end
+            dpanel.dirty = true
+            dpanel.epoch += 1
+        finally
+            unpin!(dest.plan, dpanel)
+        end
+    end
+    dest
+end
+
+function assert_column_range(cols::AbstractUnitRange, k::Integer, what::AbstractString)
+    first(cols) >= 1 && last(cols) <= k || throw(ArgumentError("columns $cols are not among the $what's $k columns. Pass a range inside 1:$k"))
+    nothing
+end
+
+# Panels are cut at the nominal width, ragged last panel included, so the panel
+# a column belongs to is arithmetic rather than a search.
+panelindex(pm::PanelMatrix, col::Integer) = cld(Int(col), pm.w)
+
+Base.copyto!(pm::PanelMatrix, A::AbstractMatrix) = copycols!(pm, 1:pm.k, A)
+
+function Base.copyto!(dest::PanelMatrix, src::PanelMatrix)
+    (src.N, src.k) == (dest.N, dest.k) || throw(DimensionMismatch("the source is $(src.N)×$(src.k) and the destination is $(dest.N)×$(dest.k), and a whole-matrix copy moves column j of the source into column j of the destination. Use copycols! to copy part of one matrix into part of another"))
+    copycols!(dest, 1:dest.k, src, 1:src.k)
+end
+
+"""
+    similar(pm) -> PanelMatrix
+    similar(pm, T) -> PanelMatrix{T}
+    similar(pm, T, dims) -> PanelMatrix{T}
+
+An uninitialized panel matrix from `pm`'s plan, taking `pm`'s eltype, size and
+panel width for whatever is not given. The width carries over, clamped to the
+new column count, rather than being chosen again from the plan's budget, so the
+result is cut into the same panels as `pm` and the two can meet in one
+column-panel sweep.
+
+The automatic width choice depends on `N` as well as `k`, so a companion of a
+different height built as `PanelMatrix{T}(undef, m, k; plan = X.plan)` can come
+out cut into panels `X` has no step in common with. [`panelmul!`](@ref) needs
+the two matrices it is given to share their panels, and `similar(X, T, (m, k))`
+keeps them cut the same way.
+
+Under a plan with a `scratch_dir` the result gets a scratch file of its own, as
+any other matrix built from that plan does.
+"""
+Base.similar(pm::PanelMatrix{T}) where {T} = similar(pm, T, (pm.N, pm.k))
+Base.similar(pm::PanelMatrix, ::Type{T}) where {T} = similar(pm, T, (pm.N, pm.k))
+Base.similar(pm::PanelMatrix, ::Type{T}, dims::Dims{2}) where {T} = PanelMatrix{T}(undef, dims...; plan=pm.plan, w=min(pm.w, dims[2]))
 
 function Base.Matrix(pm::PanelMatrix{T}; max_bytes::Real=Sys.free_memory() ÷ 2) where {T}
     nbytes = pm.N * pm.k * sizeof(T)

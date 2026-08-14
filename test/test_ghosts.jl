@@ -16,16 +16,73 @@
     @test rank(A) == min(N, k)
 end
 
-@testset "the generator sees the panel's own columns" begin
+@testset "the same seed gives the same matrix at every panel width" begin
+    T = defaulteltype()
+    N, k = 40, 23
+    reference = Matrix(GhostPanels(T, N, k; plan=testplan(), seed=0x5EED, w=23))
+    for w in (23, 12, 7, 1)
+        Ω = GhostPanels(T, N, k; plan=testplan(), seed=0x5EED, w=w)
+        @test npanels(Ω) == cld(k, w)
+        @test Matrix(Ω) == reference
+    end
+end
+
+@testset "the generator sees each column's index in the full matrix" begin
     T = defaulteltype()
     N, k, w = 12, 7, 3
     plan = testplan()
-    Ω = GhostPanels(T, N, k; plan=plan, w=w) do dst, rng, cols
-        for (c, col) in enumerate(cols)
-            dst[:, c] .= T(col)
-        end
+    Ω = GhostPanels(T, N, k; plan=plan, w=w) do dst, rng, col
+        dst .= T(col)
     end
     @test Matrix(Ω) == T.(repeat((1:k)', N))
+end
+
+@testset "a per column generator is free of the panel boundaries w=$w" for w in (23, 7, 1)
+    T = defaulteltype()
+    N, k = 40, 23
+    plan = testplan()
+    # Normalizing a column needs the whole column, and that is what the
+    # generator is handed however the columns are cut into panels.
+    Ω = GhostPanels(T, N, k; plan=plan, seed=0xC0FFEE, w=w) do dst, rng, col
+        randn!(rng, dst)
+        dst ./= norm(dst)
+    end
+    A = Matrix(Ω)
+    @test all(j -> norm(A[:, j]) ≈ 1, 1:k)
+    @test A == Matrix(GhostPanels(T, N, k; plan=testplan(), seed=0xC0FFEE, w=23) do dst, rng, col
+        randn!(rng, dst)
+        dst ./= norm(dst)
+    end)
+end
+
+@testset "a Rademacher generator round trips" begin
+    T = defaulteltype()
+    N, k, w = 24, 9, 4
+    plan = testplan()
+    Ω = GhostPanels(T, N, k; plan=plan, seed=7, w=w) do dst, rng, col
+        rand!(rng, dst, (-one(T), one(T)))
+    end
+    A = Matrix(Ω)
+    @test all(x -> abs(x) == 1, A)
+    @test A == Matrix(Ω)
+end
+
+@testset "a narrowed host tier hands the generator its own eltype" begin
+    T = defaulteltype()
+    S = narrowed(T)
+    N, k, w = 12, 5, 2
+    seen = Tuple{DataType,Int}[]
+    plan = testplan(host_eltype=S)
+    Ω = GhostPanels(T, N, k; plan=plan, w=w) do dst, rng, col
+        push!(seen, (eltype(dst), length(dst)))
+        randn!(rng, dst)
+    end
+    Matrix(Ω)
+    @test length(seen) == k
+    # The generator writes into the host tier's storage, so it sees S rather
+    # than the compute eltype, and it sees a whole column however wide the panel
+    # holding that column is.
+    @test all(entry -> entry == (S, N), seen)
 end
 
 @testset "a ghost panel is regenerated after it leaves host memory" begin
@@ -106,6 +163,58 @@ end
         @test !ondisk(panel)
     end
     @test Matrix(Ω) == A
+end
+
+@testset "a read only sweep leaves a ghost regenerable w=$w" for w in (23, 7, 1)
+    T = defaulteltype()
+    m, n, k = 40, 25, 23
+    reference = randmatrix(T, m, n)
+    plan = testplan()
+    Ω = GhostPanels(T, n, k; plan=plan, seed=0x5EED, w=w)
+    A = Matrix(Ω)
+    Y = PanelMatrix{T}(undef, m, k; plan=plan, w=w)
+
+    panelmul!(Y, deviceoperator(reference), Ω)
+    @test Matrix(Y) ≈ reference * A rtol=blastol(T, m, k)
+    @test occursin("ghost", sprint(show, Ω))
+    @test !any(panel -> panel.dirty, Ω.panels)
+    @test all(panel -> panel.pins == 0, Ω.panels)
+    for panel in Ω.panels
+        evict!(panel, plan)
+    end
+    @test Matrix(Ω) == A
+end
+
+# The chain a randomized method runs on every iteration. The budget leaves the
+# ghost fewer blocks than it has panels, so panels of it are dropped and made
+# again while the row sweeps inside cholqr2! hold every panel of Y at once.
+function sketchchain(plan, ::Type{T}, reference, m, n, k, w) where {T}
+    Ω = GhostPanels(T, n, k; plan=plan, seed=0x5EED, w=w)
+    Y = PanelMatrix{T}(undef, m, k; plan=plan, w=w)
+    panelmul!(Y, deviceoperator(reference), Ω)
+    R = cholqr2!(Y)
+    Matrix(Ω), Matrix(Y), R
+end
+
+@testset "the sketch chain matches the dense reference under a tight budget" begin
+    T = defaulteltype()
+    m, n, k, w = 40, 24, 24, 3
+    reference = randmatrix(T, m, n)
+    tol = blastol(T, m, k)
+    budget = panelbudget(cld(k, w), m, w, T) + panelbudget(6, n, w, T)
+
+    A, Q, R = sketchchain(testplan(host_budget=budget), T, reference, m, n, k, w)
+    @test opnorm(Q' * Q - I) <= orthogonality_bound(T, m, k)
+    @test Q * R ≈ reference * A rtol=tol
+
+    if HAS_HDF5
+        mktempdir() do dir
+            spilled, Qd, Rd = sketchchain(testplan(scratch_dir=dir, host_budget=budget), T, reference, m, n, k, w)
+            @test spilled == A
+            @test opnorm(Qd' * Qd - I) <= orthogonality_bound(T, m, k)
+            @test Qd * Rd ≈ reference * spilled rtol=tol
+        end
+    end
 end
 
 @testset "ghost construction is validated" begin

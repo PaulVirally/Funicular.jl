@@ -19,8 +19,10 @@ views under Metal, plain `Array` views on the reference backend. Write it
 against `AbstractVector` and let the arrays decide, the way the operators in
 `test/operators.jl` do.
 
-Funicular applies an operator to whole columns, so `G` must be square and match
-the row count of the panel matrices it is used with.
+Funicular applies an operator to whole columns, so an `m × n` `G` reads columns
+of an `n`-row matrix and writes columns of an `m`-row one. `panelmul!` takes any
+such shape. `project` is the exception and needs a square `G`, since `Q' G Q`
+makes sense only if `G` maps a space into itself.
 
 ## What is optional
 

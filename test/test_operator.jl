@@ -47,7 +47,18 @@ end
 end
 
 @testset "check_operator catches a wrong shape" begin
-    @test_throws ArgumentError checkop(MisshapenAdjoint(deviceoperator(randmatrix(defaulteltype(), 10, 10))))
+    T = defaulteltype()
+    @test_throws ArgumentError checkop(MisshapenAdjoint(deviceoperator(randmatrix(T, 10, 10))))
+    @test_throws ArgumentError checkop(MisshapenAdjoint(deviceoperator(randmatrix(T, 9, 5))))
+end
+
+@testset "an operator has to match both row counts" begin
+    T = defaulteltype()
+    G = deviceoperator(randmatrix(T, 9, 5))
+    @test Funicular.assert_operator_shape(G, 9, 5) === nothing
+    @test_throws ArgumentError Funicular.assert_operator_shape(G, 5, 9)
+    @test_throws ArgumentError Funicular.assert_operator_shape(G, 9, 9)
+    @test_throws ArgumentError Funicular.assert_square_operator(G, 9)
 end
 
 @testset "check_operator catches a panel and column mismatch" begin

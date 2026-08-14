@@ -72,7 +72,7 @@ struct DiskHome
 end
 
 # What a ghost matrix is made of: the generator and the seed are shared by every
-# panel, and the panel index picks the random stream out of the seed.
+# panel, and a column's index picks its random stream out of the seed.
 struct GhostSource{F}
     generator::F
     seed::UInt64
@@ -83,7 +83,6 @@ end
 
 struct GhostHome{F}
     source::GhostSource{F}
-    index::Int
     cols::UnitRange{Int}
 end
 

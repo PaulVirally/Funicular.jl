@@ -71,6 +71,12 @@ function assert_square_operator(G, N::Integer)
     nothing
 end
 
+function assert_operator_shape(G, m::Integer, n::Integer)
+    rows, cols = operator_size(G)
+    (rows, cols) == (Int(m), Int(n)) || throw(ArgumentError("operator is $(rows)×$(cols) but it reads columns of an $n-row matrix and writes columns of an $m-row one, so it has to be $(m)×$(n). Either the operator or one of the two matrices has the wrong row count"))
+    nothing
+end
+
 apply_operator!(dst::AbstractMatrix, G, src::AbstractMatrix) = panel_capable(G) ? mul!(dst, G, src) : columnwise_apply!(dst, G, src)
 
 function columnwise_apply!(dst::AbstractMatrix, G, src::AbstractMatrix)
@@ -90,6 +96,13 @@ and that `G` and its adjoint agree: `⟨y, Gx⟩ = ⟨G'y, x⟩`. An operator cl
 `Funicular.panel_capable` is additionally checked to give the same answer for a
 whole panel as it does column by column, and one claiming
 `Funicular.ishermitian_op` to satisfy `⟨y, Gx⟩ = ⟨Gy, x⟩`.
+
+A rectangular `G` is checked the same way. For an `m × n` operator the probes
+`x` have `n` rows and the probes `y` have `m`, so each side of
+`⟨y, Gx⟩ = ⟨G'y, x⟩` is an inner product in the space it belongs to, and an
+`adjoint` that maps the wrong way round fails the shape check before the probes
+run. Only the Hermitian claim needs a square operator, and a rectangular
+operator that claims it is refused.
 
 The probes are allocated outside any plan's pool, four blocks of `n` columns
 and two more when the panel and Hermitian claims are made, so a check on a full

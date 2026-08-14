@@ -255,6 +255,35 @@ end
     @test sweep!(noop, readpanels(X), writepanels(Y)) === nothing
 end
 
+@testset "a panel sweep leaves the row counts free w=$w nbuffers=$nb" for w in SWEEP_WIDTHS, nb in (1, 2)
+    T = defaulteltype()
+    k = 23
+    A = randmatrix(T, 9, k)
+    plan = testplan(backend=jittery_backend())
+    X = PanelMatrix(A; plan=plan, w=w)
+    Y = PanelMatrix{T}(undef, 17, k; plan=plan, w=w)
+
+    sweep!(readpanels(X), writepanels(Y); nbuffers=nb) do j, source, target
+        @test size(source) == (9, panelwidth(X, j))
+        @test size(target) == (17, panelwidth(Y, j))
+        fill!(target, T(j))
+    end
+
+    @test Matrix(X) == A
+    @test Matrix(Y) == T.([cld(c, w) for _ in 1:17, c in 1:k])
+end
+
+@testset "a panel sweep refuses matrices cut differently" begin
+    T = defaulteltype()
+    plan = testplan()
+    X = PanelMatrix{T}(undef, 9, 20; plan=plan, w=7)
+    noop = (j, panels...) -> nothing
+
+    @test_throws ArgumentError sweep!(noop, readpanels(X), writepanels(PanelMatrix{T}(undef, 17, 20; plan=plan, w=5)))
+    @test_throws ArgumentError sweep!(noop, readpanels(X), writepanels(PanelMatrix{T}(undef, 17, 18; plan=plan, w=7)))
+    @test sweep!(noop, readpanels(X), writepanels(PanelMatrix{T}(undef, 17, 20; plan=plan, w=7))) === nothing
+end
+
 @testset "row blocks tile the rows exactly N=$N height=$h" for N in (12, 13, 1), h in (1, 3, 5, 20)
     traversal = RowSteps(N, h)
     @test reduce(vcat, traversal.blocks) == 1:N
@@ -319,6 +348,34 @@ end
         Matrix(pm)
     end
     @test results[1] == results[2]
+end
+
+@testset "a row sweep leaves the column counts free nbuffers=$nb" for nb in (1, 2)
+    T = defaulteltype()
+    N = 24
+    A = randmatrix(T, N, 20)
+    plan = testplan(backend=jittery_backend())
+    X = PanelMatrix(A; plan=plan, w=7)
+    Y = PanelMatrix{T}(undef, N, 12; plan=plan, w=5)
+    traversal = RowSteps(N, min(row_block_height(N, 20, 7), row_block_height(N, 12, 5)))
+
+    sweep!(readpanels(X), writepanels(Y); traversal=traversal, nbuffers=nb) do b, source, target
+        @test size(source) == (length(traversal.blocks[b]), 20)
+        @test size(target) == (length(traversal.blocks[b]), 12)
+        target .= view(source, :, 1:12)
+    end
+
+    @test Matrix(Y) == A[:, 1:12]
+end
+
+@testset "a row sweep refuses matrices with different rows" begin
+    T = defaulteltype()
+    plan = testplan()
+    X = PanelMatrix{T}(undef, 24, 20; plan=plan, w=7)
+    noop = (b, blocks...) -> nothing
+
+    @test_throws ArgumentError sweep!(noop, readpanels(X), writepanels(PanelMatrix{T}(undef, 25, 20; plan=plan, w=7)); traversal=rowtraversal(X))
+    @test sweep!(noop, readpanels(X), writepanels(PanelMatrix{T}(undef, 24, 9; plan=plan, w=3)); traversal=rowtraversal(X)) === nothing
 end
 
 @testset "a repeated panel is refused when the sweep writes" begin

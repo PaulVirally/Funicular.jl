@@ -61,6 +61,31 @@ end
     @test_throws DimensionMismatch gram_accumulate_ka!(b, C, Ad, view(Bd, :, 1:2), one(T), zero(T))
 end
 
+@testset "rightmul_gemm! $T" for T in testeltypes()
+    b = current_backend()
+    A, C = randmatrix(T, 12, 5), randmatrix(T, 5, 4)
+    tol = blastol(T, 12, 5)
+    Ad, Cd = todevice(b, A), todevice(b, C)
+    dst = alloc_device(b, T, (12, 4))
+    fill!(dst, zero(T))
+
+    @test host(rightmul_gemm!(b, dst, Ad, Cd)) ≈ A * C rtol=tol
+
+    kernelled = alloc_device(b, T, (12, 4))
+    fill!(kernelled, T(NaN))
+    rightmul_gemm_ka!(b, kernelled, Ad, Cd)
+    @test host(kernelled) ≈ A * C rtol=tol
+
+    # The ragged last block of a row traversal, which cuts the rows of the
+    # destination and of the block it multiplies.
+    fill!(dst, zero(T))
+    rightmul_gemm!(b, view(dst, 1:7, :), view(Ad, 1:7, :), Cd)
+    @test host(dst)[1:7, :] ≈ A[1:7, :] * C rtol=tol
+    @test all(iszero, host(dst)[8:12, :])
+
+    @test_throws DimensionMismatch rightmul_gemm_ka!(b, dst, Ad, view(Cd, :, 1:3))
+end
+
 @testset "rdiv_upper! $T" for T in testeltypes()
     b = current_backend()
     Y = randmatrix(T, 7, 5)

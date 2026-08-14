@@ -8,10 +8,15 @@
     GhostPanels([f!], T, N, k; plan, seed=0, w=nothing) -> PanelMatrix{T}
 
 An `N × k` matrix of compute eltype `T` whose panels are generated on demand and
-never stored. Panel `j` is filled by `f!(dst, rng, cols)`, where `dst` is the
-panel's host buffer, `rng` is a `Random.Xoshiro` seeded from `seed` and `j`
-alone, and `cols` are the columns of the full matrix that panel holds. `f!`
+never stored. Column `col` is filled by `f!(dst, rng, col)`, where `dst` is a
+host array holding one whole column, `rng` is a `Random.Xoshiro` seeded from
+`seed` and `col` alone, and `col` is the column's index in the full matrix. `f!`
 defaults to standard normal entries.
+
+`dst` is host memory and never a device array, and its eltype is the one the
+host tier stores: under a narrowing `host_eltype` that is the narrowed type
+rather than `T`. It holds all `N` rows of the column, so a generator that
+normalizes what it draws needs nothing from the panels around it.
 
 The result is an ordinary [`PanelMatrix`](@ref) apart from being read only, so
 `panelmul!(Y, G, Ω)`, `gram(Ω)` and `foreachpanel(f, Ω; write=false)` all work
@@ -26,19 +31,18 @@ stay in host memory while there is room for them and are dropped rather than
 written when there is not, so a ghost matrix needs no `scratch_dir` and no
 `host_budget` beyond what a sweep holds at once.
 
-Regeneration is exact within one Julia version and one panel width. Both `hash`
-and the `Xoshiro` stream are Julia implementation details, and the stream is per
-panel, so a different `w` cuts the columns differently and gives a different
-matrix. Two runs that have to agree need the same Julia version and the same
-`w`. Otherwise, write the matrix out once with [`save`](@ref) and load it
-thereafter.
+A column's stream comes from its index and the seed, so panels regenerate in any
+order and one seed means one matrix whatever the panel width. Regeneration is
+exact within one Julia version: both `hash` and the `Xoshiro` stream are Julia
+implementation details. Two runs on different versions that have to agree need
+the matrix written out once with [`save`](@ref) and loaded thereafter.
 
 # Arguments
-- `f!`: Generator for one panel, called as `f!(dst, rng, cols)`
+- `f!`: Generator for one column, called as `f!(dst, rng, col)`
 - `N::Integer`: Number of rows
 - `k::Integer`: Number of columns
 - `plan::ResidencyPlan`: The plan that owns the tiers the panels live on
-- `seed=0`: Seed the panel's random stream is derived from
+- `seed=0`: Seed the column's random stream is derived from
 - `w=nothing`: Panel width for this matrix, or `nothing` to take the plan's choice from the device budget (see [`ResidencyPlan`](@ref))
 
 ```julia
@@ -56,21 +60,21 @@ function GhostPanels(f!, ::Type{T}, N::Integer, k::Integer; plan::ResidencyPlan,
     PanelMatrix{T,typeof(plan)}(Int(N), Int(k), width, panels, plan, nothing)
 end
 
-GhostPanels(::Type{T}, N::Integer, k::Integer; kwargs...) where {T} = GhostPanels(randn_panel!, T, N, k; kwargs...)
+GhostPanels(::Type{T}, N::Integer, k::Integer; kwargs...) where {T} = GhostPanels(randn_column!, T, N, k; kwargs...)
 
 function ghost_panel(::Type{T}, source::GhostSource, j::Integer) where {T}
     cols = ((Int(j) - 1) * source.w + 1):min(Int(j) * source.w, source.k)
-    Panel{T}(nothing, GhostTier(), GhostHome(source, Int(j), cols), length(cols), false, 0, 0, nothing)
+    Panel{T}(nothing, GhostTier(), GhostHome(source, cols), length(cols), false, 0, 0, nothing)
 end
 
 """
-    Funicular.randn_panel!(dst, rng, cols)
+    Funicular.randn_column!(dst, rng, col)
 
 Fills `dst` with standard normal entries. For a complex eltype that means real
 and imaginary parts of variance one half each. [`GhostPanels`](@ref) uses this
 when no generator is given, and any generator has to have this signature.
 """
-randn_panel!(dst::AbstractMatrix, rng::AbstractRNG, ::AbstractUnitRange) = randn!(rng, dst)
+randn_column!(dst::AbstractVector, rng::AbstractRNG, ::Integer) = randn!(rng, dst)
 
 isghost(pm::PanelMatrix) = first(pm.panels).home isa GhostHome
 
@@ -79,16 +83,22 @@ function assert_writable(pm::PanelMatrix)
     throw(ArgumentError("this is a ghost matrix: its panels are regenerated from a seed rather than stored, so anything written to one would be lost the moment that panel left host memory. Write into a panel matrix of its own instead, which for a $(pm.N)×$(pm.k) ghost that fits in host memory is PanelMatrix(Matrix(ghost); plan = plan, w = $(pm.w))"))
 end
 
-# Nothing to write: the panel's contents are a function of its index, so the
-# host block goes straight back to the pool and the next reader regenerates it.
+# Nothing to write: the panel's contents are a function of the columns it holds,
+# so the host block goes straight back to the pool and the next reader
+# regenerates it.
 cool!(::GhostHome, ::Panel) = nothing
 
 coldtier(::GhostHome) = GhostTier()
 
-# The stream depends on the panel index and the seed and on nothing else, so a
-# sweep is repeatable and panels can be regenerated in any order.
+# One stream per column, keyed on the column's index in the full matrix and on
+# the seed, so the width the columns are cut at cannot reach the values and
+# panels can be regenerated in any order. One Xoshiro per column costs nothing
+# next to filling the N rows it draws.
 function generate_panel!(home::GhostHome, dst::AbstractMatrix)
-    home.source.generator(dst, Xoshiro(hash(home.index, home.source.seed)), home.cols)
+    source = home.source
+    for (c, col) in enumerate(home.cols)
+        source.generator(view(dst, :, c), Xoshiro(hash(col, source.seed)), col)
+    end
     dst
 end
 

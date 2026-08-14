@@ -1,9 +1,10 @@
 # Feature-creep tripwire: the export list is fixed, and adding to it means
 # editing this test on purpose.
 const PUBLIC_API = [:CPUBackend, :Funicular, :GhostPanels, :PanelMatrix,
-                    :ResidencyPlan, :check_operator, :cholqr2!, :foreachpanel,
-                    :gram, :load, :npanels, :panelmul!, :panelrange,
-                    :panelwidth, :project, :save, :scale!]
+                    :ResidencyPlan, :check_operator, :cholqr2!, :copycols!,
+                    :foreachpanel, :gram, :load, :npanels, :panelmul!,
+                    :panelrange, :panelwidth, :project, :rightmul!, :save,
+                    :scale!]
 
 @testset "public API surface" begin
     @test sort(names(Funicular)) == PUBLIC_API

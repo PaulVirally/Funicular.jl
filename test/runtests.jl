@@ -42,6 +42,9 @@ include("setup.jl")
                 @testset "mini RSVD" begin
                     include("test_rsvd.jl")
                 end
+                @testset "factorization chain" begin
+                    include("test_chain.jl")
+                end
                 if HAS_HDF5
                     @testset "disk tier" begin
                         include("test_disk.jl")

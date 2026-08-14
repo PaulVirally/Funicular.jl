@@ -21,9 +21,11 @@ back on the sweep's producer task a step or two ahead of the pipeline, so the
 read overlaps the transfers rather than stalling them.
 
 A fourth kind of panel has no storage at all: [`GhostPanels`](@ref) regenerates
-its panels from a seed and the panel index whenever one is asked for, and drops
-them rather than writing them when host memory runs short. That is the right
-representation for the random test matrix of a randomized method.
+its columns from a seed and the column index whenever a panel is asked for, and
+drops them rather than writing them when host memory runs short. That is the
+right representation for the random test matrix of a randomized method. One seed
+means one matrix whatever the panel width, so two machines that can afford
+different panel sizes still generate the same test matrix.
 
 ## Panel width
 
@@ -34,9 +36,13 @@ evens the width out over the panels it implies: a `k = 1000` matrix whose budget
 allows `w = 999` is cut into two panels of 500 rather than one of 999 and one
 of 1.
 
-Override it with `panel_width` on the plan or `w` on one matrix. Two panel
-matrices in one operation must share `(N, k, w)` exactly; there is no
-repartitioning.
+Override it with `panel_width` on the plan or `w` on one matrix. Two matrices
+that meet in a column-panel operation have to be cut the same way, and the
+automatic choice depends on `N`, so a companion of a different height comes out
+cut differently unless it is built with `similar`.
+[Porting a randomized method](porting.md) has the rule for each traversal.
+`copyto!` between two matrices of different widths cuts a matrix into other
+panels.
 
 Wider panels mean fewer, larger transfers and better use of the bus. They also
 mean more device memory per staging buffer and a coarser unit of work for the
@@ -51,8 +57,10 @@ range this was designed around.
     `N × w` in the compute eltype,
   * a second set of those in the storage eltype when the host tier is narrowed,
   * `workspace_bytes(G)`, the operator's own device memory,
-  * the small `k × k` accumulators `gram` and `project` use, and one extra panel
-    buffer for `project`.
+  * the small `k × k` matrices an operation keeps on the device: an accumulator
+    for `gram` and `project`, the uploaded factor for `rightmul!`,
+  * one buffer beyond the sweep's own for `project`, which is a panel, and for
+    the in-place `rightmul!`, which is a row block.
 
 Take it from the device's total memory minus a reserve rather than from
 `CUDA.free_memory()`, which under-reports once the memory pool holds cached
@@ -66,12 +74,13 @@ to hold the whole matrix, but it does have to hold what a sweep touches at once:
   * a panel sweep (`panelmul!`, `axpy!`, `scale!`, `foreachpanel`) stages up to
     four steps ahead of the pipeline, one panel per matrix per step, so four
     panels per matrix in the sweep;
-  * a row sweep (`gram`, `cholqr2!`) works on blocks of rows that span every
-    panel, so it holds every panel of its matrix in host memory at once.
+  * a row sweep (`gram`, `cholqr2!`, `rightmul!`) works on blocks of rows that
+    span every panel, so it holds every panel of its matrix in host memory at
+    once.
 
 That second one is the real floor: `host_budget` cannot go below one whole
-matrix while `gram` and `cholqr2!` traverse rows. A sweep that cannot get host
-memory raises an error saying so rather than silently degrading.
+matrix while an operation traverses rows. A sweep that cannot get host memory
+raises an error saying so rather than silently degrading.
 
 ## Precision
 

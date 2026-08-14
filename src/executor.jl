@@ -49,6 +49,9 @@ repeats_a_panel(::RowSteps) = false
 buffer_dims(::PanelSteps, pm::PanelMatrix) = (pm.N, pm.w)
 buffer_dims(traversal::RowSteps, pm::PanelMatrix) = (length(first(traversal.blocks)), pm.k)
 
+assert_sweepable(::PanelSteps, X::PanelMatrix, Y::PanelMatrix) = assert_same_panels(X, Y)
+assert_sweepable(::RowSteps, X::PanelMatrix, Y::PanelMatrix) = assert_same_rows(X, Y)
+
 step_view(traversal::PanelSteps, buffer, step::Int, pm::PanelMatrix) = view(buffer, :, 1:pm.panels[traversal.panels[step]].width)
 step_view(traversal::RowSteps, buffer, step::Int, ::PanelMatrix) = view(buffer, 1:length(traversal.blocks[step]), :)
 
@@ -123,15 +126,22 @@ end
 """
     sweep!(f!, operands...; nbuffers=nothing, traversal=nothing)
 
-Visits a set of conformal panel matrices step by step, calling
-`f!(label, buffers...)` with one device resident staging buffer per operand, in
-the order the operands were given. Build the operands with [`readpanels`](@ref),
-[`writepanels`](@ref) and [`updatepanels`](@ref). A read operand is copied into
-its buffer before `f!` runs, a write operand is copied back out of it after.
+Visits a set of panel matrices step by step, calling `f!(label, buffers...)` with
+one device resident staging buffer per operand, in the order the operands were
+given. Build the operands with [`readpanels`](@ref), [`writepanels`](@ref) and
+[`updatepanels`](@ref). A read operand is copied into its buffer before `f!`
+runs, a write operand is copied back out of it after.
 
 A step is one column panel by default, labelled with the panel index. Passing
 [`RowSteps`](@ref) as the traversal instead makes a step a block of rows
 spanning every panel, with an `nrows × k` buffer.
+
+The operands have to agree on whatever dimension a step names, and on nothing
+more. Under column panel steps that means the same `k` and the same panel width;
+the row counts are free, so one sweep can read an `n × k` matrix and write an
+`m × k` one. Under row block steps it means the same `N`, and the column counts
+and the widths are free. Every operand still belongs to one plan, and each gets
+staging buffers sized from its own matrix.
 
 Uploads go on one queue, `f!` on a second, writebacks on a third, ordered by
 events so that with `nbuffers=2` step `s+1` uploads while step `s` computes.
@@ -156,8 +166,9 @@ function sweep!(f!, operands::SweepOperand...; nbuffers=nothing, traversal=nothi
     isempty(operands) && throw(ArgumentError("a sweep needs at least one panel matrix, wrapped as readpanels(pm), writepanels(pm) or updatepanels(pm)"))
     reference = first(operands).pm
     plan = reference.plan
+    steps = traversal === nothing ? PanelSteps(npanels(reference)) : traversal
     for operand in operands
-        assert_conformal(reference, operand.pm)
+        assert_sweepable(steps, reference, operand.pm)
         operand.pm.plan === plan || throw(ArgumentError("every panel matrix in one sweep must belong to the same ResidencyPlan, since the plan is what owns the staging buffers the sweep runs through. Build both matrices from one plan"))
         operand.write && assert_writable(operand.pm)
     end
@@ -166,16 +177,19 @@ function sweep!(f!, operands::SweepOperand...; nbuffers=nothing, traversal=nothi
     end
     requested = nbuffers === nothing ? plan.nbuffers : Int(nbuffers)
     requested >= 1 || throw(ArgumentError("nbuffers must be at least 1, got $requested"))
-    steps = traversal === nothing ? PanelSteps(npanels(reference)) : traversal
     writing = any(operand -> operand.write, operands)
     writing && repeats_a_panel(steps) && throw(ArgumentError("this sweep visits a panel more than once and writes back, so the second visit would overwrite the first. Repeated panels are only allowed in a read-only sweep"))
 
     backend = plan.backend
     count = nsteps(steps)
     nb = min(requested, count)
-    dims = buffer_dims(steps, reference)
-    buffers = map(operand -> checkout_device_buffers!(plan, eltype(operand.pm), dims, nb), operands)
-    staging = map(operand -> checkout_staging_buffers!(plan, operand.pm, dims, nb), operands)
+    # The dimension a step leaves free may differ between operands, so each set
+    # of buffers is sized from its own matrix. The device pool is keyed by
+    # eltype and shape, so two sets of different sizes come out of it without
+    # colliding.
+    dims = map(operand -> buffer_dims(steps, operand.pm), operands)
+    buffers = map((operand, d) -> checkout_device_buffers!(plan, eltype(operand.pm), d, nb), operands, dims)
+    staging = map((operand, d) -> checkout_staging_buffers!(plan, operand.pm, d, nb), operands, dims)
     up, compute, down = make_sweep_queues(backend)
     slotfree = Vector{Any}(nothing, nb)
     feed = stage_channel(steps, operands)
@@ -183,8 +197,8 @@ function sweep!(f!, operands::SweepOperand...; nbuffers=nothing, traversal=nothi
         for _ in 1:count
             step = take!(feed)
             slot = mod1(step, nb)
-            targets = map(buffer -> step_view(steps, buffer[slot], step, reference), buffers)
-            vias = map(set -> set === nothing ? nothing : step_view(steps, set[slot], step, reference), staging)
+            targets = map((operand, buffer) -> step_view(steps, buffer[slot], step, operand.pm), operands, buffers)
+            vias = map((operand, set) -> set === nothing ? nothing : step_view(steps, set[slot], step, operand.pm), operands, staging)
             label = steplabel(steps, step)
 
             free = slotfree[slot]

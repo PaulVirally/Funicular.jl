@@ -1,5 +1,7 @@
+# What every two-matrix operation needs, whatever its traversal: one plan and
+# one compute eltype. The shapes they have to share depend on the traversal, so
+# each operation checks those itself.
 function shared_plan(X::PanelMatrix, Y::PanelMatrix)
-    assert_conformal(X, Y)
     eltype(X) === eltype(Y) || throw(ArgumentError("panel matrices in one operation must share their compute eltype, got $(eltype(X)) and $(eltype(Y)). Narrowing belongs on the storage tiers, not here"))
     X.plan === Y.plan || throw(ArgumentError("panel matrices in one operation must belong to the same ResidencyPlan, since the plan is what owns the staging buffers the operation runs through. Build both matrices from one plan"))
     X.plan
@@ -30,6 +32,7 @@ Wrap it in `Hermitian` if you need the symmetry exactly.
 """
 function gram(X::PanelMatrix, Y::PanelMatrix=X; nbuffers=nothing)
     plan = shared_plan(X, Y)
+    assert_conformal(X, Y)
     T = eltype(X)
     accumulator = only(checkout_device_buffers!(plan, T, (X.k, X.k), 1))
     try
@@ -65,14 +68,22 @@ end
     panelmul!(Y, G, X; nbuffers=nothing) -> Y
 
 Applies the operator `G` to every column of `X`, writing the result into the
-matching column of `Y`. Panels of `X` stream up to the device and panels of `Y`
-stream back down, both overlapped with the operator's work on the panel in
-between.
+matching column of `Y`, in one sweep over column panels. Panels of `X` stream up
+to the device and panels of `Y` stream back down, both overlapped with the
+operator's work on the panel in between.
 
-`G` must be square and match the row count of `X` and `Y`, and must satisfy the
-operator contract: run [`check_operator`](@ref) on it once. An operator that
-declares `Funicular.panel_capable` is handed the whole resident panel, otherwise
-`Y`'s columns are filled one `mul!` at a time from the resident panel.
+`G` is `m × n`, `X` is `n × k` and `Y` is `m × k`. The operator can be
+rectangular and the two matrices can have different row counts. They share `k`,
+the panel width, and the plan, since a step of the sweep is column panel `j` of
+both. `G` must also satisfy the operator contract: run [`check_operator`](@ref)
+on it once. An operator that declares `Funicular.panel_capable` is handed the
+whole resident panel, otherwise `Y`'s columns are filled one `mul!` at a time
+from the resident panel.
+
+A plan that chooses panel widths for itself takes `N` into account as well as
+`k`, so two matrices of different heights built from one plan can come out cut
+differently and then have no step in common. When `m ≠ n`, fix `panel_width` in
+the plan, or pass `w = panelwidth(X)` when building `Y`.
 
 # Arguments
 - `nbuffers=nothing`: Staging buffers per operand, defaulting to the plan's `nbuffers`
@@ -80,7 +91,8 @@ declares `Funicular.panel_capable` is handed the whole resident panel, otherwise
 function panelmul!(Y::PanelMatrix, G, X::PanelMatrix; nbuffers=nothing)
     shared_plan(X, Y)
     X === Y && throw(ArgumentError("panelmul! cannot write its output over its input: the operator is applied panel by panel and would read columns it has already overwritten"))
-    assert_square_operator(G, X.N)
+    assert_same_panels(X, Y)
+    assert_operator_shape(G, Y.N, X.N)
     sweep!(readpanels(X), writepanels(Y); nbuffers=nbuffers) do _, Xb, Yb
         apply_operator!(Yb, G, Xb)
     end
@@ -157,9 +169,88 @@ function rdiv_rows!(Y::PanelMatrix{T}, R::Matrix{T}; nbuffers=nothing) where {T}
 end
 
 """
+    rightmul!(Y, C; nbuffers=nothing) -> Y
+    rightmul!(dest, src, C; nbuffers=nothing) -> dest
+
+Multiplies a panel matrix by a small dense factor on the right: `Y ← Y C` in
+place, or `dest ← src C` into a second matrix. In place `C` is `k × k`, since a
+matrix cannot change its own column count. Out of place `src` is `N × s`, `C` is
+`s × r` and `dest` is `N × r`, so `r` columns come out of `s`, which is what
+truncating a basis needs.
+
+The sweep goes over blocks of rows rather than over column panels, since a
+factor on the right mixes columns and a column panel holds only part of each of
+its rows. One row block spans every panel, so the whole matrix moves exactly
+once, but every panel has to be host resident at the same time.
+
+The in-place form needs one device block buffer beyond the sweep's own: a GEMM
+cannot have its destination alias its source, so each block is multiplied into a
+temporary and copied back. The out-of-place form needs nothing extra, since
+`src` streams up while `dest` streams down.
+
+`dest` and `src` share their rows, their plan and their compute eltype, and are
+free to differ in column count and panel width. `src` may be a ghost matrix, so
+a regenerated test matrix can be multiplied straight into a sketch. `dest` and
+the in-place `Y` are written to and so cannot be ghosts.
+
+`C` is any `AbstractMatrix`, `UpperTriangular` and `Adjoint` included. It is
+densified and converted to the compute eltype before it goes to the device,
+which costs nothing next to the sweep because it is only `s × r`.
+
+# Arguments
+- `nbuffers=nothing`: Staging buffers per operand, defaulting to the plan's `nbuffers`
+"""
+function rightmul!(Y::PanelMatrix{T}, C::AbstractMatrix; nbuffers=nothing) where {T}
+    size(C) == (Y.k, Y.k) || throw(ArgumentError("rightmul!(Y, C) writes the product back into Y, which has $(Y.k) columns and cannot grow or shrink, so C must be $(Y.k)×$(Y.k), got $(size(C)). Use rightmul!(dest, Y, C) when the column count changes"))
+    plan = Y.plan
+    traversal = rowtraversal(Y)
+    factor = only(checkout_device_buffers!(plan, T, (Y.k, Y.k), 1))
+    scratch = only(checkout_device_buffers!(plan, T, buffer_dims(traversal, Y), 1))
+    try
+        h2d!(factor, Matrix{T}(C), plan.backend)
+        sweep!(updatepanels(Y); nbuffers=nbuffers, traversal=traversal) do _, Yb
+            # The last block of the traversal may be shorter than the buffer, so
+            # the temporary is cut to the block rather than used whole.
+            product = view(scratch, axes(Yb, 1), :)
+            rightmul_gemm!(plan.backend, product, Yb, factor)
+            convert_copy!(plan.backend, Yb, product)
+        end
+    finally
+        checkin_device_buffers!(plan, (factor, scratch))
+    end
+    Y
+end
+
+function rightmul!(dest::PanelMatrix, src::PanelMatrix, C::AbstractMatrix; nbuffers=nothing)
+    dest === src && throw(ArgumentError("rightmul!(dest, src, C) needs two different matrices, since one of them streams up while the other streams down and a single matrix cannot do both in one sweep. Use rightmul!(Y, C) when the product goes back where it came from, which needs a square C"))
+    size(C) == (src.k, dest.k) || throw(ArgumentError("rightmul!(dest, src, C) computes src * C, so C must be $(src.k)×$(dest.k) to take a $(src.N)×$(src.k) source into a $(dest.N)×$(dest.k) destination, got $(size(C)). Give C one row per column of src and one column per column of dest"))
+    plan = shared_plan(src, dest)
+    assert_same_rows(src, dest)
+    T = eltype(dest)
+    # The two matrices are cut into panels independently, so their row blocks
+    # can come out at different heights. The shorter one is taken for both, and
+    # neither block buffer then outgrows a panel buffer.
+    height = min(row_block_height(src.N, src.k, src.w), row_block_height(dest.N, dest.k, dest.w))
+    traversal = RowSteps(src.N, height)
+    factor = only(checkout_device_buffers!(plan, T, (src.k, dest.k), 1))
+    try
+        h2d!(factor, Matrix{T}(C), plan.backend)
+        sweep!(readpanels(src), writepanels(dest); nbuffers=nbuffers, traversal=traversal) do _, srcb, destb
+            rightmul_gemm!(plan.backend, destb, srcb, factor)
+        end
+    finally
+        checkin_device_buffers!(plan, (factor,))
+    end
+    dest
+end
+
+"""
     project(Q, G; nbuffers=nothing) -> Matrix
 
 Forms the `k × k` projected operator `Q' * G * Q` without ever storing `G Q`.
+
+Unlike [`panelmul!`](@ref), this needs a square `G` matching the row count of
+`Q`, since `Q' G Q` means nothing unless `G` maps a space into itself.
 
 This is the one operation here that does not move the matrix a constant number
 of times. For each panel `j` it applies `G` to that panel and then sweeps all of
@@ -231,6 +322,7 @@ end
 # overflow it.
 function LinearAlgebra.axpy!(α::Number, X::PanelMatrix, Y::PanelMatrix; nbuffers=nothing)
     shared_plan(X, Y)
+    assert_conformal(X, Y)
     X === Y && throw(ArgumentError("axpy!(α, X, X) doubles a matrix against itself. Use scale!(X, 1 + α)"))
     sweep!(readpanels(X), updatepanels(Y); nbuffers=nbuffers) do _, Xb, Yb
         axpy!(α, Xb, Yb)
@@ -240,6 +332,7 @@ end
 
 function LinearAlgebra.dot(X::PanelMatrix, Y::PanelMatrix; nbuffers=nothing)
     plan = shared_plan(X, Y)
+    assert_conformal(X, Y)
     T = eltype(X)
     accumulator = only(checkout_device_buffers!(plan, T, (X.N, X.w), 1))
     try

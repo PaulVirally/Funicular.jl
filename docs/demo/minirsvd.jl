@@ -127,9 +127,9 @@ println("one panel is ", Base.format_bytes(N * W * sizeof(T)),
 # ## The random test matrix
 #
 # `Ω` is the Gaussian a randomized method starts from. It is never stored: each
-# panel is regenerated from the seed and the panel index when a sweep asks for
-# it, and dropped when the host tier needs the room. At the sizes this package
-# is for, that saves hundreds of gigabytes of scratch space.
+# column is regenerated from the seed and the column index when a sweep asks for
+# the panel holding it, and dropped when the host tier needs the room. At the
+# sizes this package is for, that saves hundreds of gigabytes of scratch space.
 
 Ω = GhostPanels(T, N, K; plan=plan, seed=0x5EED)
 

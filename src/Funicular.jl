@@ -16,7 +16,7 @@ include("operator.jl")
 include("panelblas.jl")
 
 export CPUBackend, ResidencyPlan, PanelMatrix, GhostPanels, npanels, panelwidth,
-       panelrange, foreachpanel, check_operator, gram, panelmul!, cholqr2!,
-       project, scale!, save, load
+       panelrange, copycols!, foreachpanel, check_operator, gram, panelmul!,
+       rightmul!, cholqr2!, project, scale!, save, load
 
 end # module Funicular

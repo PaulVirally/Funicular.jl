@@ -54,6 +54,39 @@ function gram_accumulate_ka!(backend::DeviceBackend, C, A, B, α, β)
     C
 end
 
+@kernel function rightmul_gemm_kernel!(dst, @Const(A), @Const(C))
+    i, j = @index(Global, NTuple)
+    acc = zero(eltype(dst))
+    @inbounds for l in axes(A, 2)
+        acc += A[i, l] * C[l, j]
+    end
+    @inbounds dst[i, j]=acc
+end
+
+"""
+    rightmul_gemm!(backend, dst, A, C)
+
+Computes `dst ← A C`. The default is the vendor's GEMM through
+`LinearAlgebra.mul!`. A backend whose GEMM does not reach every combination of
+views Funicular hands it overrides this with [`rightmul_gemm_ka!`](@ref).
+"""
+rightmul_gemm!(::DeviceBackend, dst, A, C) = mul!(dst, A, C)
+
+"""
+    rightmul_gemm_ka!(backend, dst, A, C)
+
+Computes the same product as `rightmul_gemm!` through a kernel, one thread per
+entry of `dst`, each summing along the shared dimension. It has none of a tuned
+GEMM's blocking and is meant for backends that cannot offer one.
+"""
+function rightmul_gemm_ka!(backend::DeviceBackend, dst, A, C)
+    (size(A, 2) == size(C, 1) && size(dst) == (size(A, 1), size(C, 2))) || throw(DimensionMismatch("cannot multiply a $(size(A)) block by a $(size(C)) factor into a $(size(dst)) matrix"))
+    isempty(dst) && return dst
+    kernel = rightmul_gemm_kernel!(ka_backend(backend))
+    kernel(dst, A, C; ndrange=size(dst))
+    dst
+end
+
 @kernel function rdiv_upper_kernel!(Y, @Const(R))
     row = @index(Global)
     @inbounds for j in axes(Y, 2)
