@@ -1,6 +1,6 @@
 # Test operators. A plain matrix already satisfies the contract and reports
 # itself panel capable, so these cover the other cases: an operator that only
-# knows one column at a time, a matrix free one, and four that break the
+# knows one column at a time, a matrix free one, and five that break the
 # contract in the ways check_operator has to catch. Each holds its coefficients
 # wherever the backend under test wants them, since an operator is applied to
 # device resident panels.
@@ -117,6 +117,21 @@ Base.adjoint(G::WrongPanel) = WrongPanel(conjugate_transpose(G.A))
 Funicular.panel_capable(::WrongPanel) = true
 LinearAlgebra.mul!(y::AbstractVector, G::WrongPanel, x::AbstractVector) = mul!(y, G.A, x)
 LinearAlgebra.mul!(Y::AbstractMatrix, G::WrongPanel, X::AbstractMatrix) = rmul!(mul!(Y, G.A, X), 2)
+
+# Claims it takes whole panels and then cannot: its matrix mul! throws, the way
+# a map that materializes host arrays does on a device backend.
+struct UnhonouredPanel{T,M<:AbstractMatrix{T}}
+    A::M
+end
+
+Base.size(G::UnhonouredPanel) = size(G.A)
+Base.size(G::UnhonouredPanel, d::Integer) = size(G.A, d)
+Base.eltype(::UnhonouredPanel{T}) where {T} = T
+Base.adjoint(G::UnhonouredPanel) = UnhonouredPanel(conjugate_transpose(G.A))
+Funicular.panel_capable(::UnhonouredPanel) = true
+LinearAlgebra.mul!(y::AbstractVector, G::UnhonouredPanel, x::AbstractVector) = mul!(y, G.A, x)
+LinearAlgebra.mul!(::AbstractMatrix, ::UnhonouredPanel, ::AbstractMatrix) =
+    error("UnhonouredPanel cannot take a whole panel after all")
 
 # Declares the Hermitian symmetry it does have, so a trait can be watched
 # crossing an adapter.

@@ -58,9 +58,17 @@ any plan's pool, so it is a diagnostic rather than something to call in a loop.
 ## LinearMaps.jl
 
 Once LinearMaps.jl is loaded, a `LinearMap` satisfies the contract with no
-further work, with `panel_capable` true and `ishermitian_op` reading the map's
-own trait. Note that LinearMaps declines to inspect a matrix it wraps, so
-`LinearMap(A)` is Hermitian only if you say `LinearMap(A; ishermitian = true)`.
+further work, with `ishermitian_op` reading the map's own trait. Note that
+LinearMaps declines to inspect a matrix it wraps, so `LinearMap(A)` is Hermitian
+only if you say `LinearMap(A; ishermitian = true)`.
+
+`panel_capable` is true only for a map that wraps a matrix, such as
+`LinearMap(A)` and its adjoint, where `mul!(Y, A, X)` is a real GEMM. Other maps
+do define a matrix `mul!`, but a `CompositeMap` (which is what `A * B` builds)
+implements it by materializing an intermediate factor into host arrays, and that
+fails on a device backend. As such, Funicular applies these maps one column at a
+time itself, which is the same work the column loop inside LinearMaps would have
+done, but on the caller's arrays.
 
 Going the other way:
 

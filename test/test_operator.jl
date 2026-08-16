@@ -65,6 +65,13 @@ end
     @test_throws ArgumentError checkop(WrongPanel(deviceoperator(randmatrix(defaulteltype(), 10, 10))))
 end
 
+@testset "check_operator names a panel claim the operator cannot honour" begin
+    G = UnhonouredPanel(deviceoperator(randmatrix(defaulteltype(), 10, 10)))
+    result = @test_throws ArgumentError checkop(G)
+    @test occursin("panel_capable", result.value.msg)
+    @test occursin("cannot take a whole panel after all", result.value.msg)
+end
+
 @testset "check_operator catches a false Hermitian claim" begin
     T = defaulteltype()
     @test_throws ArgumentError checkop(FalselyHermitian(deviceoperator(randmatrix(T, 10, 10))))

@@ -47,8 +47,8 @@ The map applies `G` and its `adjoint`, carries `G`'s size and eltype, and
 declares Hermitian symmetry when [`Funicular.ishermitian_op`](@ref) does.
 
 The other direction needs nothing: a `LinearMap` already satisfies the contract,
-and loading LinearMaps.jl tells Funicular that one takes whole panels and when
-one is Hermitian. Neither crossing carries [`Funicular.workspace_bytes`](@ref),
+and loading LinearMaps.jl tells Funicular when one is Hermitian and when one
+takes whole panels. Neither crossing carries [`Funicular.workspace_bytes`](@ref),
 since a `LinearMap` has no way to hold it, so pass the operator's workspace to
 [`ResidencyPlan`](@ref) yourself.
 
@@ -146,7 +146,14 @@ function check_operator(G; n::Integer=3, backend::DeviceBackend=CPUBackend(), rt
     if panel_capable(G)
         panelled = alloc_device(backend, T, (rows, probes))
         fill!(panelled, zero(T))
-        mul!(panelled, G, X)
+        # An operator that claims the trait but cannot actually take a matrix
+        # fails somewhere inside its own mul!, so name the claim here instead of
+        # propagating whatever it threw.
+        try
+            mul!(panelled, G, X)
+        catch err
+            throw(ArgumentError("G claims Funicular.panel_capable but mul!(Y, G, X) on a whole $(cols)×$probes panel threw: $(sprint(showerror, err)). Either define mul! for a matrix right hand side or leave Funicular.panel_capable(G) at its default of false, and Funicular will apply G one column at a time"))
+        end
         isapprox(panelled, GX; rtol=tol, atol=tol) ||
             throw(ArgumentError("G claims Funicular.panel_capable but applying it to a whole $(cols)×$probes panel does not match applying it column by column, to a relative tolerance of $tol"))
     end

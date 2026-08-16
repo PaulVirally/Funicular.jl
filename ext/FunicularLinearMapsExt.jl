@@ -8,11 +8,18 @@ using LinearMaps
 # contract holds for one without any adapter. It does not answer the optional
 # traits, and both of those can be defined for it.
 
-# When a map has no better way, LinearMaps applies it to a matrix by looping over
-# the columns, the same loop panelmul! would otherwise run itself. Letting the
-# map do it means that a map that does know how to take several columns at once,
-# a WrappedMap around a dense matrix for instance, can do so.
-Funicular.panel_capable(::LinearMap) = true
+# Every LinearMap has an mul!(Y, A, X) method for a matrix X, but it is not
+# always a loop over the columns. A CompositeMap (which is what A * B builds)
+# materializes an intermediate factor via convert(AbstractArray, ...), and that
+# allocates host arrays no matter where the caller's arrays live, so it fails on
+# a device backend. As such, only a map that wraps a matrix claims the trait,
+# since its mul! is a real GEMM. Every other map falls back to Funicular's
+# column loop, which does the same work LinearMaps would have done, but on the
+# caller's arrays.
+Funicular.panel_capable(::LinearMap) = false
+Funicular.panel_capable(A::LinearMaps.WrappedMap) = Funicular.panel_capable(A.lmap)
+Funicular.panel_capable(A::Union{LinearMaps.AdjointMap,LinearMaps.TransposeMap}) =
+    Funicular.panel_capable(A.lmap)
 
 # Hermitian symmetry is a trait a LinearMap carries and composes, so this reads
 # it rather than probing.
