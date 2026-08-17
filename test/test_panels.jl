@@ -197,7 +197,7 @@ end
     T = defaulteltype()
     N, k, w = 20, 8, 3
     plan = testplan()
-    Ω = GhostPanels(T, N, k; plan=plan, seed=0xC0FFEE, w=w)
+    Ω = GhostPanels(T, N, k; plan=plan, seed=0xdeadbeef, w=w)
     A = Matrix(Ω)
     dest = PanelMatrix{T}(undef, N, 2k; plan=plan, w=5)
 

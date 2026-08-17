@@ -46,7 +46,7 @@ the matrix written out once with [`save`](@ref) and loaded thereafter.
 - `w=nothing`: Panel width for this matrix, or `nothing` to take the plan's choice from the device budget (see [`ResidencyPlan`](@ref))
 
 ```julia
-Ω = GhostPanels(ComplexF64, N, k; plan = plan, seed = 0x5EED)
+Ω = GhostPanels(ComplexF64, N, k; plan = plan, seed = 0xdeadbeef)
 panelmul!(Y, G, Ω)
 ```
 """

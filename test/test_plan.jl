@@ -38,7 +38,7 @@ end
 end
 
 @testset "panel width properties" begin
-    rng = Xoshiro(0x5EED)
+    rng = Xoshiro(0xdeadbeef)
     for _ in 1:400
         N = rand(rng, 1:5000)
         k = rand(rng, 1:2000)

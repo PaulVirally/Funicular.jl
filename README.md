@@ -26,7 +26,7 @@ plan = ResidencyPlan(backend = Funicular.cuda_backend(),
                      host_budget = 200 * 2^30,
                      scratch_dir = "/scratch/$(ENV["USER"])/funicular")
 
-Ω = GhostPanels(ComplexF64, N, k; plan = plan, seed = 0x5EED)
+Ω = GhostPanels(ComplexF64, N, k; plan = plan, seed = 0xdeadbeef)
 Y = PanelMatrix{ComplexF64}(undef, N, k; plan = plan)
 
 panelmul!(Y, G, Ω) # apply the operator, streamed and double buffered

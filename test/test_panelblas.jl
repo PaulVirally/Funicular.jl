@@ -107,7 +107,7 @@ end
     m, n, k = 40, 25, 23
     reference = randmatrix(T, m, n)
     plan = testplan()
-    Ω = GhostPanels(T, n, k; plan=plan, seed=0x5EED, w=w)
+    Ω = GhostPanels(T, n, k; plan=plan, seed=0xdeadbeef, w=w)
     Y = PanelMatrix{T}(undef, m, k; plan=plan, w=w)
 
     panelmul!(Y, deviceoperator(reference), Ω)
@@ -215,7 +215,7 @@ end
     N, s, r = 40, 23, 12
     C = randmatrix(T, s, r)
     plan = testplan()
-    Ω = GhostPanels(T, N, s; plan=plan, seed=0x5EED, w=w)
+    Ω = GhostPanels(T, N, s; plan=plan, seed=0xdeadbeef, w=w)
     dest = PanelMatrix{T}(undef, N, r; plan=plan, w=clamp(w - 3, 1, r))
     reference = Matrix(Ω)
 

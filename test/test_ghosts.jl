@@ -2,15 +2,15 @@
     T = defaulteltype()
     N, k = 24, 8
     plan = testplan()
-    Ω = GhostPanels(T, N, k; plan=plan, seed=0x5EED, w=w)
+    Ω = GhostPanels(T, N, k; plan=plan, seed=0xdeadbeef, w=w)
 
     @test size(Ω) == (N, k)
     @test eltype(Ω) === T
     @test npanels(Ω) == cld(k, w)
     A = Matrix(Ω)
     @test A == Matrix(Ω)
-    @test A == Matrix(GhostPanels(T, N, k; plan=testplan(), seed=0x5EED, w=w))
-    @test A != Matrix(GhostPanels(T, N, k; plan=testplan(), seed=0x5EEE, w=w))
+    @test A == Matrix(GhostPanels(T, N, k; plan=testplan(), seed=0xdeadbeef, w=w))
+    @test A != Matrix(GhostPanels(T, N, k; plan=testplan(), seed=0xdeadbeef + 1, w=w))
     # Standard normals, so nothing is degenerate and the columns are independent.
     @test 0.5 < norm(A) / sqrt(N * k) < 2
     @test rank(A) == min(N, k)
@@ -19,9 +19,9 @@ end
 @testset "the same seed gives the same matrix at every panel width" begin
     T = defaulteltype()
     N, k = 40, 23
-    reference = Matrix(GhostPanels(T, N, k; plan=testplan(), seed=0x5EED, w=23))
+    reference = Matrix(GhostPanels(T, N, k; plan=testplan(), seed=0xdeadbeef, w=23))
     for w in (23, 12, 7, 1)
-        Ω = GhostPanels(T, N, k; plan=testplan(), seed=0x5EED, w=w)
+        Ω = GhostPanels(T, N, k; plan=testplan(), seed=0xdeadbeef, w=w)
         @test npanels(Ω) == cld(k, w)
         @test Matrix(Ω) == reference
     end
@@ -43,13 +43,13 @@ end
     plan = testplan()
     # Normalizing a column needs the whole column, and that is what the
     # generator is handed however the columns are cut into panels.
-    Ω = GhostPanels(T, N, k; plan=plan, seed=0xC0FFEE, w=w) do dst, rng, col
+    Ω = GhostPanels(T, N, k; plan=plan, seed=0xdeadbeef, w=w) do dst, rng, col
         randn!(rng, dst)
         dst ./= norm(dst)
     end
     A = Matrix(Ω)
     @test all(j -> norm(A[:, j]) ≈ 1, 1:k)
-    @test A == Matrix(GhostPanels(T, N, k; plan=testplan(), seed=0xC0FFEE, w=23) do dst, rng, col
+    @test A == Matrix(GhostPanels(T, N, k; plan=testplan(), seed=0xbeef, w=23) do dst, rng, col
         randn!(rng, dst)
         dst ./= norm(dst)
     end)
@@ -103,7 +103,7 @@ end
     T = defaulteltype()
     N, k = 20, 8
     plan = testplan()
-    Ω = GhostPanels(T, N, k; plan=plan, seed=0xF00D, w=w)
+    Ω = GhostPanels(T, N, k; plan=plan, seed=0xdeadbeef, w=w)
     A = Matrix(Ω)
     dense = randmatrix(T, N, N)
     G = deviceoperator(dense)
@@ -170,7 +170,7 @@ end
     m, n, k = 40, 25, 23
     reference = randmatrix(T, m, n)
     plan = testplan()
-    Ω = GhostPanels(T, n, k; plan=plan, seed=0x5EED, w=w)
+    Ω = GhostPanels(T, n, k; plan=plan, seed=0xdeadbeef, w=w)
     A = Matrix(Ω)
     Y = PanelMatrix{T}(undef, m, k; plan=plan, w=w)
 
@@ -189,7 +189,7 @@ end
 # ghost fewer blocks than it has panels, so panels of it are dropped and made
 # again while the row sweeps inside cholqr2! hold every panel of Y at once.
 function sketchchain(plan, ::Type{T}, reference, m, n, k, w) where {T}
-    Ω = GhostPanels(T, n, k; plan=plan, seed=0x5EED, w=w)
+    Ω = GhostPanels(T, n, k; plan=plan, seed=0xdeadbeef, w=w)
     Y = PanelMatrix{T}(undef, m, k; plan=plan, w=w)
     panelmul!(Y, deviceoperator(reference), Ω)
     R = cholqr2!(Y)

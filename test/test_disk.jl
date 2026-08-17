@@ -261,12 +261,12 @@ end
 @testset "mini RSVD with the data larger than the host tier" begin
     T = defaulteltype()
     N, k, w, rank = 120, 32, 4, 6
-    Random.seed!(0xD15C)
+    Random.seed!(0xdeadbeef)
     A = lowrank_plus_noise(T, N, rank, noisefloor(T))
     G = deviceoperator(A)
     reference = svdvals(A)
 
-    Random.seed!(0xD15CE)
+    Random.seed!(0xdeadbeef)
     _, resident = minirsvd(G, T, N, k, testplan(), w)
 
     mktempdir() do dir
@@ -275,7 +275,7 @@ end
         # one matrix at once.
         plan = testplan(scratch_dir=dir, panel_width=w,
                         host_budget=panelbudget(10, N, w, T))
-        Random.seed!(0xD15CE)
+        Random.seed!(0xdeadbeef)
         Q, S = minirsvd(G, T, N, k, plan, w)
 
         @test disk_reads(Q) > 0

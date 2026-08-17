@@ -22,7 +22,7 @@ spectrum_tol(::Type{T}) where {T} = real(T) === Float64 ? 1e-6 : 1e-4
 @testset "mini RSVD matches the dense reference w=$w" for w in (24, 12, 17, 1)
     T = defaulteltype()
     N, k, rank = 120, 24, 6
-    Random.seed!(0x5EED + w)
+    Random.seed!(0xdeadbeef + w)
     A = lowrank_plus_noise(T, N, rank, noisefloor(T))
     reference = svdvals(A)
     plan = testplan()
@@ -35,11 +35,11 @@ end
 @testset "mini RSVD is unchanged by the buffer count" begin
     T = defaulteltype()
     N, k, w, rank = 120, 24, 7, 6
-    Random.seed!(0xC0FFEE)
+    Random.seed!(0xdeadbeef)
     A = lowrank_plus_noise(T, N, rank, noisefloor(T))
     G = deviceoperator(A)
     values = map((1, 2)) do nb
-        Random.seed!(0xBEEF)
+        Random.seed!(0xbeef)
         plan = testplan()
         _, S = minirsvd(G, T, N, k, plan, w; nbuffers=nb)
         svdvals(S)
@@ -50,7 +50,7 @@ end
 @testset "mini RSVD through a matrix free operator" begin
     T = defaulteltype()
     N, k, w, rank = 120, 24, 7, 6
-    Random.seed!(0xF00D)
+    Random.seed!(0xdeadbeef)
     # A spectrum that halves all the way down would give the subspace iteration
     # a matrix of condition number 2^k to orthonormalize, and CholeskyQR2 cannot
     # hold that in single precision. Here the retained values halve and the rest

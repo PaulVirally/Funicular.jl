@@ -93,7 +93,7 @@ end
 
 const W = 8
 
-Random.seed!(0xB0A7)
+Random.seed!(0xdeadbeef)
 basis = CuArray(qr(randn(T, N, RANK)).Q * Matrix{T}(I, N, RANK))
 spectrum = 2.0 .^ -(0:(RANK - 1))
 noise = 1e-6
@@ -131,7 +131,7 @@ println("one panel is ", Base.format_bytes(N * W * sizeof(T)),
 # the panel holding it, and dropped when the host tier needs the room. At the
 # sizes this package is for, that saves hundreds of gigabytes of scratch space.
 
-Ω = GhostPanels(T, N, K; plan=plan, seed=0x5EED)
+Ω = GhostPanels(T, N, K; plan=plan, seed=0xdeadbeef)
 
 # ## Subspace iteration
 #

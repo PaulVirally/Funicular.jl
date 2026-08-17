@@ -9,13 +9,13 @@
     # The operator is rectangular and the panels are cut narrow, so the chain
     # carries two different row counts and a ragged last panel throughout.
     m, n, s, r, w = 120, 96, 24, 9, 5
-    Random.seed!(0x5EED)
+    Random.seed!(0xdeadbeef)
     plan = testplan()
     reference = randmatrix(T, m, n)
     G = deviceoperator(reference)
     tol = blastol(T, max(m, n), s)
 
-    Ω = GhostPanels(T, n, s; plan=plan, seed=0xB0A7, w=w)
+    Ω = GhostPanels(T, n, s; plan=plan, seed=0xdeadbeef, w=w)
     probe = Matrix(Ω)
 
     Y = PanelMatrix{T}(undef, m, s; plan=plan, w=w)

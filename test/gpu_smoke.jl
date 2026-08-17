@@ -176,7 +176,7 @@ end
 println("(two buffers should save about one panel copy per panel; benchmark/overlap.jl is the real measurement)")
 
 step("12. ghost panels, generated rather than stored")
-Ω = GhostPanels(ComplexF64, N, K; plan=plan, seed=0x5EED, w=W)
+Ω = GhostPanels(ComplexF64, N, K; plan=plan, seed=0xdeadbeef, w=W)
 first_pass = Matrix(Ω)
 for panel in Ω.panels
     Funicular.evict!(panel, plan)
