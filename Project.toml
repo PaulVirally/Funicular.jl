@@ -1,6 +1,6 @@
 name = "Funicular"
 uuid = "7ea9c160-9439-4cfe-a32a-3debd616a773"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Paul Virally <pvirally@gmail.com>"]
 
 [deps]
