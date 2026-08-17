@@ -49,7 +49,7 @@ end
     end
     A = Matrix(Ω)
     @test all(j -> norm(A[:, j]) ≈ 1, 1:k)
-    @test A == Matrix(GhostPanels(T, N, k; plan=testplan(), seed=0xbeef, w=23) do dst, rng, col
+    @test A == Matrix(GhostPanels(T, N, k; plan=testplan(), seed=0xdeadbeef, w=23) do dst, rng, col
         randn!(rng, dst)
         dst ./= norm(dst)
     end)
